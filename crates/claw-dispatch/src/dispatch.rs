@@ -9,9 +9,13 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use claw_channels::{FinalizedMsgContext, ReplyPayload};
+
+use claw_agent_runtime::{
+    AgentRunner, DeliveryError, ResponseSink, RunContext, RuntimeDeps,
+};
 
 use crate::command_queue::{CommandQueue, MAIN_LANE};
 
@@ -309,6 +313,244 @@ pub async fn dispatch_inbound_message(
     Ok(result)
 }
 
+// ---------------------------------------------------------------------------
+// Agent dispatch context
+// ---------------------------------------------------------------------------
+
+/// Dependencies for dispatching messages through the agent runtime.
+///
+/// Wraps the runner and its deps in `Arc`s so they can be shared across
+/// async tasks and moved into `'static` queue closures.
+#[derive(Clone)]
+pub struct AgentDispatchContext {
+    /// The agent runner instance (manages concurrent sessions).
+    pub runner: Arc<AgentRunner>,
+    /// Runtime dependencies (catalog, provider, pipeline, workspace, etc.).
+    pub deps: Arc<RuntimeDeps>,
+}
+
+// ---------------------------------------------------------------------------
+// CollectingSink
+// ---------------------------------------------------------------------------
+
+/// A [`ResponseSink`] that buffers all text into a `String`.
+///
+/// Used to collect the full agent response inside the queue closure,
+/// then convert it to a `ReplyPayload` for dispatch.
+struct CollectingSink {
+    buffer: Arc<tokio::sync::Mutex<String>>,
+    on_partial: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+}
+
+impl CollectingSink {
+    fn new(on_partial: Option<Arc<dyn Fn(&str) + Send + Sync>>) -> Self {
+        Self {
+            buffer: Arc::new(tokio::sync::Mutex::new(String::new())),
+            on_partial,
+        }
+    }
+
+    async fn take_text(&self) -> String {
+        std::mem::take(&mut *self.buffer.lock().await)
+    }
+}
+
+#[async_trait]
+impl ResponseSink for CollectingSink {
+    async fn send_text(&self, text: &str) -> Result<(), DeliveryError> {
+        self.buffer.lock().await.push_str(text);
+        if let Some(ref cb) = self.on_partial {
+            cb(text);
+        }
+        Ok(())
+    }
+
+    async fn finish(&self) -> Result<(), DeliveryError> {
+        Ok(())
+    }
+
+    fn max_message_size(&self) -> usize {
+        4096
+    }
+}
+
+// ---------------------------------------------------------------------------
+// dispatch_with_agent
+// ---------------------------------------------------------------------------
+
+/// Drive the inbound dispatch pipeline with full agent runtime integration.
+///
+/// Replaces the stub in [`dispatch_inbound_message`] with actual agent calls.
+/// Pipeline steps:
+/// 1. Extract `session_key` and `agent_id` from the finalized context
+/// 2. Detect commands (`/` or `!` prefixed) — handle internally
+/// 3. Enqueue processing on the command queue lane
+/// 4. Within the lane: call `run_agent()` with streaming collection
+/// 5. Typing → reply → stop-typing lifecycle via dispatcher
+/// 6. Return [`DispatchInboundResult`]
+pub async fn dispatch_with_agent(
+    msg: &FinalizedMsgContext,
+    queue: &CommandQueue,
+    dispatcher: &dyn ReplyDispatcher,
+    options: &GetReplyOptions,
+    agent_ctx: &AgentDispatchContext,
+) -> Result<DispatchInboundResult> {
+    let session_key = msg
+        .session_key
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_owned();
+
+    let agent_id = msg
+        .provider
+        .as_deref()
+        .unwrap_or("default")
+        .to_owned();
+
+    // Determine the body for command detection and agent input.
+    let body = msg
+        .body_for_commands
+        .as_deref()
+        .or(msg.command_body.as_deref())
+        .or(msg.raw_body.as_deref())
+        .or(msg.body.as_deref())
+        .unwrap_or("")
+        .to_owned();
+
+    let detected = detect_command(&body);
+    if let Some(ref cmd) = detected {
+        debug!(
+            session_key = %session_key,
+            command = %cmd.name,
+            args = %cmd.args,
+            native = cmd.is_native,
+            "command detected"
+        );
+    }
+
+    // Send typing indicator immediately.
+    if let Err(e) = dispatcher.send_typing(&session_key).await {
+        warn!(session_key = %session_key, error = %e, "failed to send typing indicator");
+    }
+
+    // Clone for the closure ('static + Send).
+    let sk = session_key.clone();
+    let aid = agent_id.clone();
+    let cancel = options.cancel.clone();
+    let detected_clone = detected.clone();
+    let runner = Arc::clone(&agent_ctx.runner);
+    let deps = Arc::clone(&agent_ctx.deps);
+    let on_partial = options.on_partial_reply.clone();
+    let body_clone = body.clone();
+    let user_id = msg.sender_id.clone();
+    let channel = msg
+        .provider
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_owned();
+
+    let result = queue
+        .enqueue_command_in_lane(MAIN_LANE, move || async move {
+            // Check cancellation before doing work.
+            if cancel.is_cancelled() {
+                return Ok(DispatchInboundResult {
+                    session_key: sk,
+                    agent_id: aid,
+                    reply: None,
+                    error: Some("cancelled before processing".into()),
+                });
+            }
+
+            // Handle detected commands directly (without agent runtime).
+            if let Some(cmd) = detected_clone {
+                let reply = ReplyPayload {
+                    text: Some(format!(
+                        "Command '{}' received (args: '{}')",
+                        cmd.name, cmd.args
+                    )),
+                    ..Default::default()
+                };
+                return Ok(DispatchInboundResult {
+                    session_key: sk,
+                    agent_id: aid,
+                    reply: Some(reply),
+                    error: None,
+                });
+            }
+
+            // Build the run context for the agent runtime.
+            let run_context = RunContext {
+                agent_id: aid.clone(),
+                channel,
+                user_id,
+                model_override: None,
+            };
+
+            // Create a collecting sink to buffer the response.
+            let sink = CollectingSink::new(on_partial);
+
+            // Run the agent through its 11-phase lifecycle.
+            let run_result = runner
+                .run_agent(&sk, &body_clone, run_context, &deps, &sink)
+                .await;
+
+            match run_result {
+                Ok(()) => {
+                    let response_text = sink.take_text().await;
+                    let reply = if response_text.is_empty() {
+                        None
+                    } else {
+                        Some(ReplyPayload {
+                            text: Some(response_text),
+                            ..Default::default()
+                        })
+                    };
+
+                    info!(
+                        session_key = %sk,
+                        has_reply = reply.is_some(),
+                        "agent run completed"
+                    );
+
+                    Ok(DispatchInboundResult {
+                        session_key: sk,
+                        agent_id: aid,
+                        reply,
+                        error: None,
+                    })
+                }
+                Err(err) => {
+                    warn!(
+                        session_key = %sk,
+                        error = %err,
+                        "agent run failed"
+                    );
+
+                    Ok(DispatchInboundResult {
+                        session_key: sk,
+                        agent_id: aid,
+                        reply: None,
+                        error: Some(err.to_string()),
+                    })
+                }
+            }
+        })
+        .await?;
+
+    // Stop typing and send the reply.
+    if let Err(e) = dispatcher.stop_typing(&session_key).await {
+        warn!(session_key = %session_key, error = %e, "failed to stop typing indicator");
+    }
+
+    if let Some(ref payload) = result.reply {
+        if let Err(e) = dispatcher.send_reply(&session_key, payload).await {
+            warn!(session_key = %session_key, error = %e, "failed to send reply");
+        }
+    }
+
+    Ok(result)
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -563,5 +805,219 @@ mod tests {
 
         assert_eq!(result.session_key, "unknown");
         assert_eq!(result.agent_id, "default");
+    }
+
+    // -- dispatch_with_agent -----------------------------------------------
+
+    use claw_agent_models::types::{ChatRequest, ChatResponse, ChatMessage, StreamChunk, Usage};
+    use claw_agent_models::provider::ChatStream;
+    use claw_agent_models::catalog::ModelEntry;
+    use claw_agent_runtime::{
+        AgentRunner, RuntimeDeps, TranscriptStore, SubscriberConfig,
+    };
+    use claw_agent_tools::{PolicyEngine, ToolRegistry, PipelineConfig, ToolPipeline};
+    use claw_agent_workspace::AgentWorkspace;
+    use claw_agent_models::ModelProvider;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // --- Mock ModelProvider ---
+
+    struct MockModelProvider {
+        responses: tokio::sync::Mutex<Vec<String>>,
+        call_count: AtomicUsize,
+    }
+
+    impl MockModelProvider {
+        fn new(responses: Vec<String>) -> Arc<Self> {
+            Arc::new(Self {
+                responses: tokio::sync::Mutex::new(responses),
+                call_count: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl ModelProvider for MockModelProvider {
+        fn provider_name(&self) -> &str {
+            "mock"
+        }
+        fn supports_tools(&self) -> bool {
+            true
+        }
+        fn max_context_window(&self) -> u64 {
+            200_000
+        }
+        async fn chat_completion(
+            &self,
+            _request: &ChatRequest,
+        ) -> Result<ChatResponse, claw_agent_models::ModelError> {
+            unimplemented!("use streaming")
+        }
+        async fn chat_completion_stream(
+            &self,
+            _request: &ChatRequest,
+        ) -> Result<ChatStream, claw_agent_models::ModelError> {
+            self.call_count.fetch_add(1, Ordering::Relaxed);
+            let mut resps = self.responses.lock().await;
+            let text = if resps.is_empty() {
+                "default".to_owned()
+            } else {
+                resps.remove(0)
+            };
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamChunk::ContentDelta(text)),
+                Ok(StreamChunk::Done(Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                })),
+            ])))
+        }
+    }
+
+    // --- Mock TranscriptStore ---
+
+    struct MockTranscriptStore;
+
+    #[async_trait]
+    impl TranscriptStore for MockTranscriptStore {
+        async fn load(&self, _session_key: &str) -> std::result::Result<Vec<ChatMessage>, String> {
+            Ok(vec![])
+        }
+        async fn save(
+            &self,
+            _session_key: &str,
+            _messages: &[ChatMessage],
+        ) -> std::result::Result<(), String> {
+            Ok(())
+        }
+    }
+
+    async fn test_agent_ctx(provider: Arc<dyn ModelProvider>) -> AgentDispatchContext {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = AgentWorkspace::new(tmp.path(), "test");
+        workspace.dir().ensure_dirs().await.unwrap();
+
+        let mut catalog = claw_agent_models::ModelCatalog::new();
+        catalog.register(ModelEntry {
+            id: "test-model".into(),
+            name: "Test Model".into(),
+            provider: "mock".into(),
+            context_window: Some(200_000),
+            max_tokens: Some(4096),
+            input_modalities: vec![],
+            supports_reasoning: false,
+            supports_tools: true,
+        });
+        catalog.set_global_default("test-model");
+
+        AgentDispatchContext {
+            runner: Arc::new(AgentRunner::new()),
+            deps: Arc::new(RuntimeDeps {
+                catalog,
+                provider,
+                tool_pipeline: Arc::new(ToolPipeline::new(
+                    ToolRegistry::new(),
+                    PolicyEngine::new(),
+                    PipelineConfig::default(),
+                )),
+                workspace,
+                transcript_store: Arc::new(MockTranscriptStore),
+                subscriber_config: SubscriberConfig::default(),
+                max_tool_iterations: 10,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_with_agent_regular_message() {
+        let provider = MockModelProvider::new(vec!["Hello from agent!".into()]);
+        let agent_ctx = test_agent_ctx(provider).await;
+        let ctx = MsgContext {
+            body: Some("hello world".into()),
+            session_key: Some("test-session".into()),
+            provider: Some("telegram".into()),
+            ..Default::default()
+        };
+        let finalized = FinalizedMsgContext::from_msg_context(ctx);
+        let queue = CommandQueue::new();
+        let dispatcher = BufferedReplyDispatcher::new();
+        let options = GetReplyOptions {
+            run_id: "run-agent-1".into(),
+            cancel: CancellationToken::new(),
+            on_partial_reply: None,
+            on_tool_result: None,
+        };
+
+        let result = dispatch_with_agent(&finalized, &queue, &dispatcher, &options, &agent_ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(result.session_key, "test-session");
+        assert!(result.error.is_none());
+        assert!(result.reply.is_some());
+        let text = result.reply.as_ref().unwrap().text.as_deref().unwrap();
+        assert_eq!(text, "Hello from agent!");
+
+        // Dispatcher should have received the reply.
+        let replies = dispatcher.take_replies();
+        assert_eq!(replies.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_with_agent_command_bypasses_runtime() {
+        let provider = MockModelProvider::new(vec![]);
+        let agent_ctx = test_agent_ctx(provider).await;
+        let ctx = MsgContext {
+            body: Some("/help me".into()),
+            session_key: Some("cmd-session".into()),
+            ..Default::default()
+        };
+        let finalized = FinalizedMsgContext::from_msg_context(ctx);
+        let queue = CommandQueue::new();
+        let dispatcher = BufferedReplyDispatcher::new();
+        let options = GetReplyOptions {
+            run_id: "run-cmd".into(),
+            cancel: CancellationToken::new(),
+            on_partial_reply: None,
+            on_tool_result: None,
+        };
+
+        let result = dispatch_with_agent(&finalized, &queue, &dispatcher, &options, &agent_ctx)
+            .await
+            .unwrap();
+
+        // Command should be handled without calling the agent runtime.
+        let text = result.reply.as_ref().unwrap().text.as_deref().unwrap();
+        assert!(text.contains("help"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_with_agent_cancellation() {
+        let provider = MockModelProvider::new(vec![]);
+        let agent_ctx = test_agent_ctx(provider).await;
+        let ctx = MsgContext {
+            body: Some("test".into()),
+            session_key: Some("cancel-session".into()),
+            ..Default::default()
+        };
+        let finalized = FinalizedMsgContext::from_msg_context(ctx);
+        let queue = CommandQueue::new();
+        let dispatcher = BufferedReplyDispatcher::new();
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // pre-cancel
+
+        let options = GetReplyOptions {
+            run_id: "run-cancel".into(),
+            cancel,
+            on_partial_reply: None,
+            on_tool_result: None,
+        };
+
+        let result = dispatch_with_agent(&finalized, &queue, &dispatcher, &options, &agent_ctx)
+            .await
+            .unwrap();
+
+        assert!(result.error.is_some());
+        assert!(result.error.as_deref().unwrap().contains("cancelled"));
     }
 }

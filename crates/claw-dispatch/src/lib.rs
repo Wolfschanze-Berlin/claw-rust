@@ -3,11 +3,14 @@
 //! Implements the inbound message dispatch pipeline, outbound delivery,
 //! and the lane-based command queue for concurrency control.
 
+pub mod bridge;
 pub mod command_queue;
 pub mod dispatch;
 
+pub use bridge::{ChannelReplyBridge, run_dispatch_loop};
 pub use command_queue::{CommandQueue, MAIN_LANE};
 pub use dispatch::{
-    BufferedReplyDispatcher, DetectedCommand, DispatchInboundResult, GetReplyOptions,
-    ReplyDispatcher, detect_command, dispatch_inbound_message,
+    AgentDispatchContext, BufferedReplyDispatcher, DetectedCommand, DispatchInboundResult,
+    GetReplyOptions, ReplyDispatcher, detect_command, dispatch_inbound_message,
+    dispatch_with_agent,
 };
