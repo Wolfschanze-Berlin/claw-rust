@@ -21,4 +21,12 @@ if ! command -v bd >/dev/null 2>&1; then
     exit 0
 fi
 
-exec bd hook pre-commit "$@"
+# Run bd's built-in hook logic first
+bd hook pre-commit "$@"
+
+# Dolt backend: bd hook pre-commit is a no-op, so export manually
+# Export database to JSONL and stage it for the commit
+if [ -d ".beads/dolt" ]; then
+    bd export -o .beads/beads.jsonl 2>/dev/null
+    git add .beads/beads.jsonl 2>/dev/null
+fi
