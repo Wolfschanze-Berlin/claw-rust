@@ -14,6 +14,11 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 futures-util = { workspace = true }
+chrono = { workspace = true }
+claw-agent-models = { workspace = true }
+claw-agent-tools = { workspace = true }
+claw-agent-workspace = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = "3"

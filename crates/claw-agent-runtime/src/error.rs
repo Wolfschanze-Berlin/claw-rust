@@ -19,6 +19,26 @@ pub enum RuntimeError {
     #[error("lock timeout: {0}")]
     LockTimeout(String),
 
+    /// No model could be resolved from the catalog for this context.
+    #[error("no model resolved for session '{session_key}'")]
+    NoModelResolved { session_key: String },
+
+    /// Model provider returned an error.
+    #[error("model error: {0}")]
+    ModelError(#[from] claw_agent_models::ModelError),
+
+    /// Transcript persistence failed.
+    #[error("transcript error: {0}")]
+    TranscriptError(String),
+
+    /// Tool call loop exceeded the maximum iteration count.
+    #[error("tool loop exceeded max iterations ({max})")]
+    ToolLoopExceeded { max: usize },
+
+    /// Subagent depth limit exceeded.
+    #[error("subagent depth limit exceeded: depth {depth} >= max {max}")]
+    DepthLimitExceeded { depth: usize, max: usize },
+
     /// An unexpected internal error.
     #[error("internal error: {0}")]
     InternalError(String),
@@ -47,6 +67,17 @@ mod tests {
 
         let timeout = RuntimeError::LockTimeout("mutex".to_owned());
         assert!(timeout.to_string().contains("lock timeout"));
+
+        let no_model = RuntimeError::NoModelResolved {
+            session_key: "sk4".to_owned(),
+        };
+        assert!(no_model.to_string().contains("no model resolved"));
+
+        let transcript = RuntimeError::TranscriptError("corrupt".to_owned());
+        assert!(transcript.to_string().contains("corrupt"));
+
+        let tool_loop = RuntimeError::ToolLoopExceeded { max: 10 };
+        assert!(tool_loop.to_string().contains("10"));
 
         let internal = RuntimeError::InternalError("boom".to_owned());
         assert!(internal.to_string().contains("boom"));
