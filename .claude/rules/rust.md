@@ -14,3 +14,10 @@ Rules for Rust development in this project.
 - Use `Option<T>` with `#[serde(skip_serializing_if = "Option::is_none")]` for all optional fields
 - TS interfaces with optional methods map to Rust structs with `Option<Box<dyn Adapter>>`
 - TS discriminated unions (`type: "req" | "res"`) map to `#[serde(tag = "type")]` enums
+
+## egui / GUI Patterns
+
+- Use state machine enums for entity lifecycle (e.g., `Stopped/Starting/Running/Stopping/Error`) — compiler enforces valid transitions
+- Bridge async (tokio) and sync (egui render loop) with `mpsc` channels — never block the UI thread
+- Capture in-app logs with a custom `tracing::Layer` sending to a ring buffer, not file polling
+- egui achieves "polished custom" not "OS native" look — set design expectations accordingly

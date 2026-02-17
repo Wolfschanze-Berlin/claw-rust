@@ -60,6 +60,11 @@ futures-util = "0.3"
 # Telegram
 teloxide = { version = "0.17", features = ["macros"] }
 
+# GUI framework
+eframe = "0.33.3"
+egui = "0.33.3"
+egui_extras = "0.33.3"
+
 # Internal crates
 claw-config = { path = "crates/claw-config" }
 claw-core = { path = "crates/claw-core" }

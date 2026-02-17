@@ -20,7 +20,7 @@
 ### Conventions
 
 - Follow DRY (Don't Repeat Yourself) and KISS (Keep It Simple, Stupid) principles
-- Apply modern software design patterns (separation of concerns, composition over inheritance, dependency inversion)
+- Apply separation of concerns and dependency inversion. Use composition over inheritance only when multiple implementations exist (YAGNI)
 - Every struct/class must have a single responsibility — if it does more than one thing, split it
 - Keep files/modules under 500 lines; refactor when approaching this limit
 
