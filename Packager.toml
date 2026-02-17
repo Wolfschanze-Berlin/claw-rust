@@ -53,11 +53,11 @@ beforePackagingCommand = "cargo build --release"
 # IMPORTANT: [[binaries]] must come after all top-level keys (TOML scoping rule).
 
 [[binaries]]
-path = "claw"
+path = "claw-gui"
 main = true
 
 [[binaries]]
-path = "claw-gui"
+path = "claw"
 main = false
 
 # ---------- Windows — General Settings ----------
