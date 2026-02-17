@@ -49,6 +49,8 @@ struct ClawApp {
     channels_view_state: views::channels::ChannelsViewState,
     agents_view_state: views::agents::AgentsViewState,
     commit_state: views::commit_workflow::CommitWorkflowState,
+    /// Optional channel name filter for the Logs view.
+    log_channel_filter: Option<String>,
 }
 
 impl ClawApp {
@@ -85,6 +87,7 @@ impl ClawApp {
             channels_view_state: Default::default(),
             agents_view_state: Default::default(),
             commit_state: Default::default(),
+            log_channel_filter: None,
         }
     }
 }
@@ -192,7 +195,11 @@ impl eframe::App for ClawApp {
                     views::dashboard::show(ui, &state.gateway);
                 }
                 View::Logs => {
-                    views::logs::show(ui, &self.log_buffer);
+                    views::logs::show(
+                        ui,
+                        &self.log_buffer,
+                        &mut self.log_channel_filter,
+                    );
                 }
 
                 // -- Config views (use ConfigManager) --
@@ -246,7 +253,12 @@ impl ClawApp {
                 );
             }
             View::ConfigChannels => {
-                views::channels::show(ui, mgr, &mut self.channels_view_state);
+                let action =
+                    views::channels::show(ui, mgr, &mut self.channels_view_state);
+                if let views::channels::ChannelAction::ViewLogs(channel) = action {
+                    self.log_channel_filter = Some(channel);
+                    self.current_view = View::Logs;
+                }
             }
             View::ConfigAgents => {
                 views::agents::show(ui, mgr, &mut self.agents_view_state);

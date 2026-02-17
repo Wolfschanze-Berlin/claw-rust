@@ -1,12 +1,16 @@
-//! Live Logs view with auto-scroll and level-based coloring.
+//! Live Logs view with auto-scroll, level-based coloring, and optional channel filter.
 
 use eframe::egui;
 
 use crate::logging::LogBuffer;
 use crate::theme;
 
-/// Render the logs view.
-pub fn show(ui: &mut egui::Ui, log_buffer: &LogBuffer) {
+/// Render the logs view with an optional channel filter.
+///
+/// When `channel_filter` is `Some("telegram")`, only entries whose target or
+/// message contains that string are shown. A filter bar at the top lets the
+/// user clear the filter.
+pub fn show(ui: &mut egui::Ui, log_buffer: &LogBuffer, channel_filter: &mut Option<String>) {
     ui.horizontal(|ui| {
         ui.heading("Logs");
         ui.add_space(8.0);
@@ -21,6 +25,28 @@ pub fn show(ui: &mut egui::Ui, log_buffer: &LogBuffer) {
         });
     });
 
+    // Channel filter bar
+    if let Some(channel) = channel_filter.clone() {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("Filtered: {channel}"))
+                    .color(theme::BLUE)
+                    .strong(),
+            );
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("\u{00d7} Clear").color(theme::RED))
+                        .small(),
+                )
+                .on_hover_text("Show all logs")
+                .clicked()
+            {
+                *channel_filter = None;
+            }
+        });
+    }
+
     ui.add_space(8.0);
     ui.separator();
     ui.add_space(8.0);
@@ -29,15 +55,24 @@ pub fn show(ui: &mut egui::Ui, log_buffer: &LogBuffer) {
         .stick_to_bottom(true)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if log_buffer.is_empty() {
+            let has_filter = channel_filter.is_some();
+            let entries: Vec<_> = if let Some(needle) = channel_filter.as_deref() {
+                log_buffer.entries_filtered(needle).collect()
+            } else {
+                log_buffer.entries().collect()
+            };
+
+            if entries.is_empty() {
+                let msg = if has_filter {
+                    "No log events matching this channel filter."
+                } else {
+                    "No log events yet. Waiting for activity..."
+                };
                 ui.centered_and_justified(|ui| {
-                    ui.label(
-                        egui::RichText::new("No log events yet. Waiting for activity...")
-                            .color(theme::SUBTEXT),
-                    );
+                    ui.label(egui::RichText::new(msg).color(theme::SUBTEXT));
                 });
             } else {
-                for entry in log_buffer.entries() {
+                for entry in entries {
                     ui.horizontal(|ui| {
                         // Timestamp
                         let time_str = entry.timestamp.format("%H:%M:%S%.3f").to_string();

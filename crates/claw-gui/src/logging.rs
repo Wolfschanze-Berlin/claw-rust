@@ -94,6 +94,18 @@ impl LogBuffer {
         self.entries.iter()
     }
 
+    /// Return entries whose target or message contains `needle` (case-insensitive).
+    pub fn entries_filtered<'a>(
+        &'a self,
+        needle: &'a str,
+    ) -> impl Iterator<Item = &'a LogEntry> + 'a {
+        let needle_lower = needle.to_lowercase();
+        self.entries.iter().filter(move |e| {
+            e.target.to_lowercase().contains(&needle_lower)
+                || e.message.to_lowercase().contains(&needle_lower)
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

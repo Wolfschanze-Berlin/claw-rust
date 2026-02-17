@@ -14,6 +14,15 @@ use crate::config_manager::ConfigManager;
 use crate::theme;
 use crate::views::channel_detail::{ChannelDetailState, DetailAction};
 
+/// Action returned by the channels view to the parent.
+#[derive(Debug, Default)]
+pub enum ChannelAction {
+    #[default]
+    None,
+    /// Navigate to the Logs view filtered to this channel name.
+    ViewLogs(String),
+}
+
 // ---------------------------------------------------------------------------
 // Persistent UI state for the channels view
 // ---------------------------------------------------------------------------
@@ -46,11 +55,19 @@ impl Default for ChannelsViewState {
 // ---------------------------------------------------------------------------
 
 /// Render the channels view (list or detail, depending on selection).
-pub fn show(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut ChannelsViewState) {
+///
+/// Returns a [`ChannelAction`] when the user triggers a cross-view navigation
+/// (e.g. "View Logs" for a specific channel).
+pub fn show(
+    ui: &mut egui::Ui,
+    config: &mut ConfigManager,
+    state: &mut ChannelsViewState,
+) -> ChannelAction {
     if let Some(selected_key) = state.selected.clone() {
         show_detail(ui, config, state, &selected_key);
+        ChannelAction::None
     } else {
-        show_list(ui, config, state);
+        show_list(ui, config, state)
     }
 }
 
@@ -58,7 +75,8 @@ pub fn show(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut ChannelsV
 // List view
 // ---------------------------------------------------------------------------
 
-fn show_list(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut ChannelsViewState) {
+fn show_list(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut ChannelsViewState) -> ChannelAction {
+    let mut action = ChannelAction::None;
     // Header
     ui.horizontal(|ui| {
         ui.heading("Channels");
@@ -119,7 +137,7 @@ fn show_list(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Channels
                 .color(theme::OVERLAY)
                 .italics(),
         );
-        return;
+        return action;
     };
 
     if channels.is_empty() {
@@ -128,7 +146,7 @@ fn show_list(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Channels
                 .color(theme::OVERLAY)
                 .italics(),
         );
-        return;
+        return action;
     }
 
     // Sort by name for stable ordering
@@ -181,7 +199,7 @@ fn show_list(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Channels
                             state.detail_state = Some(ChannelDetailState::new(key.clone()));
                         }
 
-                        // Right side: edit + delete buttons
+                        // Right side: logs + edit + delete buttons
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(egui::Button::new(
@@ -196,6 +214,10 @@ fn show_list(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Channels
                                 state.selected = Some(key.clone());
                                 state.detail_state =
                                     Some(ChannelDetailState::new(key.clone()));
+                            }
+
+                            if ui.small_button("Logs").clicked() {
+                                action = ChannelAction::ViewLogs(key.clone());
                             }
                         });
                     });
@@ -212,6 +234,8 @@ fn show_list(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Channels
             channels.remove(&key);
         }
     }
+
+    action
 }
 
 // ---------------------------------------------------------------------------
