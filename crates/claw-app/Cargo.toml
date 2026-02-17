@@ -1,0 +1,25 @@
+[package]
+name = "claw-app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "claw"
+path = "src/main.rs"
+
+[dependencies]
+claw-core.workspace = true
+claw-config.workspace = true
+claw-channels.workspace = true
+claw-routing.workspace = true
+claw-gateway.workspace = true
+claw-plugins.workspace = true
+claw-dispatch.workspace = true
+claw-db.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+eframe.workspace = true
+egui_extras.workspace = true
+chrono.workspace = true
