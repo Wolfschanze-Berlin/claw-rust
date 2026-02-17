@@ -11,3 +11,9 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+claw-agent-models.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

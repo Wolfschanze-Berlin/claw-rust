@@ -14,9 +14,13 @@
 //! 6. **Provider** (50) — provider-specific limitations
 
 pub mod layers;
+pub mod pipeline;
 pub mod policy;
 pub mod profiles;
 
 pub use layers::*;
+pub use pipeline::{
+    HookDecision, PipelineConfig, Tool, ToolExecutionError, ToolHook, ToolPipeline, ToolRegistry,
+};
 pub use policy::{PolicyContext, PolicyDecision, PolicyEngine, PolicyLayer};
 pub use profiles::ToolProfile;
