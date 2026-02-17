@@ -1,3 +1,9 @@
+pub mod agent_detail;
+pub mod agents;
+pub mod bindings;
+pub mod channel_detail;
 pub mod channels;
+pub mod commit_workflow;
+pub mod config_editor;
 pub mod dashboard;
 pub mod logs;

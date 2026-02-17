@@ -15,3 +15,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+claw-config = { path = "../claw-config" }
+
+[dev-dependencies]
+tempfile = "3"
