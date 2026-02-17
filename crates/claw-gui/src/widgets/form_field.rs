@@ -222,7 +222,7 @@ pub fn select_field(
         ui.label(egui::RichText::new(label).color(theme::SUBTEXT));
 
         let current = value.as_deref().unwrap_or("None (default)");
-        egui::ComboBox::from_label("")
+        egui::ComboBox::from_id_salt(label)
             .selected_text(current)
             .show_ui(ui, |ui| {
                 if ui
