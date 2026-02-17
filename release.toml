@@ -1,0 +1,70 @@
+# cargo-release workspace configuration
+# Install: cargo install cargo-release
+# Usage:   cargo release patch|minor|major
+#
+# This config lives at the workspace root and applies to all crates.
+# See https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+
+# ---------------------------------------------------------------------------
+# Workspace versioning
+# ---------------------------------------------------------------------------
+
+# All crates share a single version (workspace.package.version in Cargo.toml).
+# cargo-release will bump them together in one coordinated release.
+shared-version = true
+
+# Use a single git commit for the version bump across all crates,
+# rather than one commit per crate.
+consolidate-commits = true
+
+# Only allow releases from the main branch to prevent accidental releases
+# from feature branches.
+allow-branch = ["main"]
+
+# ---------------------------------------------------------------------------
+# Git tagging
+# ---------------------------------------------------------------------------
+
+# Create a git tag for each release.
+tag = true
+
+# Tag format: v0.1.0, v0.2.0, etc.
+# The {{prefix}} placeholder is empty for workspace-level releases,
+# so this produces clean "v0.1.0" tags.
+tag-name = "v{{version}}"
+
+# Annotated tag message.
+tag-message = "Release v{{version}}"
+
+# GPG signing is not configured yet; enable this when GPG keys are set up.
+sign-tag = false
+
+# ---------------------------------------------------------------------------
+# Git commits
+# ---------------------------------------------------------------------------
+
+# Commit message used for the version bump commit.
+pre-release-commit-message = "chore: release v{{version}}"
+
+# ---------------------------------------------------------------------------
+# Remote push
+# ---------------------------------------------------------------------------
+
+# Push the version bump commit and tag to the remote after release.
+push = true
+push-remote = "origin"
+
+# ---------------------------------------------------------------------------
+# Crate publishing
+# ---------------------------------------------------------------------------
+
+# Disable crates.io publishing — this is a private application, not a library.
+publish = false
+
+# ---------------------------------------------------------------------------
+# Pre-release verification
+# ---------------------------------------------------------------------------
+
+# Run a release build before tagging to catch compilation errors early.
+# The hook receives PREV_VERSION, NEW_VERSION, and DRY_RUN env vars.
+pre-release-hook = ["cargo", "build", "--release"]
