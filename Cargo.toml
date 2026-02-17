@@ -13,6 +13,10 @@ members = [
     "crates/claw-telegram",
     "crates/claw-whatsapp",
     "crates/claw-discord",
+    "crates/claw-agent-runtime",
+    "crates/claw-agent-models",
+    "crates/claw-agent-workspace",
+    "crates/claw-agent-tools",
 ]
 resolver = "3"
 
@@ -84,3 +88,7 @@ claw-db = { path = "crates/claw-db" }
 claw-telegram = { path = "crates/claw-telegram" }
 claw-whatsapp = { path = "crates/claw-whatsapp" }
 claw-discord = { path = "crates/claw-discord" }
+claw-agent-runtime = { path = "crates/claw-agent-runtime" }
+claw-agent-models = { path = "crates/claw-agent-models" }
+claw-agent-workspace = { path = "crates/claw-agent-workspace" }
+claw-agent-tools = { path = "crates/claw-agent-tools" }
