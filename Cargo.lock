@@ -877,7 +877,6 @@ name = "claw-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "claw-channels",
  "claw-config",
  "claw-core",
@@ -886,8 +885,6 @@ dependencies = [
  "claw-gateway",
  "claw-plugins",
  "claw-routing",
- "eframe",
- "egui_extras",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1004,6 +1001,19 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "claw-gui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "eframe",
+ "egui_extras",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@ members = [
     "crates/claw-dispatch",
     "crates/claw-db",
     "crates/claw-app",
+    "crates/claw-gui",
 ]
 resolver = "3"
 
