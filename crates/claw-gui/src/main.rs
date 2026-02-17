@@ -53,6 +53,7 @@ struct ClawApp {
     channels_view_state: views::channels::ChannelsViewState,
     agents_view_state: views::agents::AgentsViewState,
     skills_view_state: views::skills::SkillsViewState,
+    bindings_view_state: views::bindings::BindingsViewState,
     commit_state: views::commit_workflow::CommitWorkflowState,
     about_view_state: views::about::AboutViewState,
     /// Background update checker for GitHub releases.
@@ -111,6 +112,7 @@ impl ClawApp {
             channels_view_state: Default::default(),
             agents_view_state: Default::default(),
             skills_view_state: Default::default(),
+            bindings_view_state: Default::default(),
             commit_state: Default::default(),
             about_view_state: Default::default(),
             update_checker,
@@ -423,7 +425,7 @@ impl ClawApp {
                 views::skills::show(ui, mgr, &mut self.skills_view_state);
             }
             View::Bindings => {
-                views::bindings::show(ui, mgr);
+                views::bindings::show(ui, mgr, &mut self.bindings_view_state);
             }
             _ => {}
         }
