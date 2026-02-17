@@ -22,6 +22,7 @@ use claw_config::types::{BindMode, OpenClawConfig};
 use claw_config::load_config;
 use claw_core::runtime::{RuntimeEnv, init_tracing};
 use claw_db::Database;
+use claw_claude_code::{ClaudeCodeConfig, ClaudeCodeDispatchContext, SessionManager};
 use claw_dispatch::{AgentDispatchContext, CommandQueue};
 use claw_gateway::handshake::AuthMode;
 use claw_gateway::server::{GatewayBindMode, GatewayServerOptions, start_gateway_server};
@@ -99,7 +100,13 @@ async fn main() -> Result<()> {
         warn!("no channels configured in config file");
     }
 
-    // 8. Spawn the dispatch loop (bridges inbound messages to agent runtime).
+    // 8. Initialize Claude Code dispatcher (if `claude` CLI is available).
+    let cc_ctx = init_claude_code_dispatcher(db_path).await;
+    if cc_ctx.is_some() {
+        info!("Claude Code dispatcher initialized — messages will route through `claude` CLI");
+    }
+
+    // 9. Spawn the dispatch loop (bridges inbound messages to agent runtime or Claude Code).
     if let Some(agent_ctx) = agent_ctx {
         let queue = CommandQueue::new();
         let dispatch_cancel = cancel.clone();
@@ -110,6 +117,7 @@ async fn main() -> Result<()> {
                 dispatch_registry,
                 agent_ctx,
                 queue,
+                cc_ctx,
                 dispatch_cancel,
             )
             .await;
@@ -121,13 +129,13 @@ async fn main() -> Result<()> {
 
     info!("application ready — press Ctrl+C to stop");
 
-    // 9. Wait for shutdown signal.
+    // 10. Wait for shutdown signal.
     tokio::signal::ctrl_c()
         .await
         .expect("failed to listen for Ctrl+C");
     info!("received shutdown signal");
 
-    // 10. Graceful shutdown.
+    // 11. Graceful shutdown.
     gateway.close("application shutdown").await;
     channel_mgr.stop_all();
     cancel.cancel(); // stops the dispatch loop
@@ -278,12 +286,22 @@ fn build_gateway_options(config: &OpenClawConfig) -> GatewayServerOptions {
 
         if let Some(ref bind) = gw.bind {
             opts.bind_mode = match bind {
-                BindMode::Localhost => GatewayBindMode::Loopback,
-                BindMode::Lan | BindMode::All => GatewayBindMode::Lan,
+                BindMode::Localhost | BindMode::Auto | BindMode::Loopback => {
+                    GatewayBindMode::Loopback
+                }
+                BindMode::Lan | BindMode::All | BindMode::Tailnet | BindMode::Custom => {
+                    GatewayBindMode::Lan
+                }
             };
         }
 
-        if let Some(enabled) = gw.control_ui_enabled {
+        // Prefer nested controlUi config, fall back to flat controlUiEnabled.
+        let control_ui_enabled = gw
+            .control_ui
+            .as_ref()
+            .and_then(|ui| ui.enabled)
+            .or(gw.control_ui_enabled);
+        if let Some(enabled) = control_ui_enabled {
             opts.control_ui_enabled = enabled;
         }
 
@@ -297,7 +315,11 @@ fn build_gateway_options(config: &OpenClawConfig) -> GatewayServerOptions {
                     AuthMode::Token { token }
                 }
                 Some("password") => {
-                    let password = auth.token.clone().unwrap_or_default();
+                    let password = auth
+                        .password
+                        .clone()
+                        .or_else(|| auth.token.clone())
+                        .unwrap_or_default();
                     AuthMode::Password { password }
                 }
                 Some("trusted-proxy") => AuthMode::TrustedProxy,
@@ -311,6 +333,69 @@ fn build_gateway_options(config: &OpenClawConfig) -> GatewayServerOptions {
     }
 
     opts
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code dispatcher initialization
+// ---------------------------------------------------------------------------
+
+/// Initialize the Claude Code dispatcher if the `claude` CLI is available.
+///
+/// Checks for the CLI binary in PATH and, if found, creates a session
+/// manager backed by a separate SQLite connection to the same database.
+/// Returns `None` if the binary is not found (the app falls back to the
+/// agent runtime API).
+async fn init_claude_code_dispatcher(db_path: &Path) -> Option<ClaudeCodeDispatchContext> {
+    // Check if `claude` binary is available.
+    let config = ClaudeCodeConfig::default();
+    let check = tokio::process::Command::new(&config.cli_path)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+
+    match check {
+        Ok(status) if status.success() => {
+            info!(
+                cli = %config.cli_path.display(),
+                "Claude Code CLI found"
+            );
+        }
+        _ => {
+            info!(
+                cli = %config.cli_path.display(),
+                "Claude Code CLI not found — Claude Code dispatch disabled"
+            );
+            return None;
+        }
+    }
+
+    // Open a dedicated SQLite connection for Claude Code sessions.
+    // Uses the same database file but a separate connection to avoid
+    // mutex contention with the main Database handle.
+    let conn = match rusqlite::Connection::open(db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "failed to open SQLite connection for Claude Code sessions");
+            return None;
+        }
+    };
+
+    let conn = Arc::new(Mutex::new(conn));
+    match claw_claude_code::SqliteSessionStore::new(conn).await {
+        Ok(store) => {
+            let session_mgr = Arc::new(SessionManager::new(store));
+            Some(ClaudeCodeDispatchContext {
+                config,
+                session_mgr,
+            })
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to create Claude Code session store");
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ claw-routing.workspace = true
 claw-gateway.workspace = true
 claw-plugins.workspace = true
 claw-dispatch.workspace = true
+claw-claude-code.workspace = true
 claw-db.workspace = true
 claw-agent-models.workspace = true
 claw-agent-runtime.workspace = true
@@ -29,6 +30,7 @@ claw-agent-workspace.workspace = true
 claw-telegram = { workspace = true, optional = true }
 claw-whatsapp = { workspace = true, optional = true }
 claw-discord = { workspace = true, optional = true }
+rusqlite.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

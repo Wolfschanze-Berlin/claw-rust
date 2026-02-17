@@ -10,6 +10,7 @@ claw-channels.workspace = true
 claw-agent-runtime.workspace = true
 claw-agent-models.workspace = true
 claw-routing.workspace = true
+claw-claude-code.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

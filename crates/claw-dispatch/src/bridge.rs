@@ -2,6 +2,8 @@
 //!
 //! Provides [`ChannelReplyBridge`], a [`ReplyDispatcher`] implementation that
 //! routes replies back through the originating channel's outbound adapter.
+//! Also hosts the inbound message dispatch loop with dual-path routing
+//! (agent runtime API vs Claude Code CLI subprocess).
 
 use std::sync::Arc;
 
@@ -13,6 +15,7 @@ use tracing::{debug, warn};
 use claw_channels::plugin::ChannelPlugin;
 use claw_channels::types::{ChannelOutboundContext, InboundMessage};
 use claw_channels::{FinalizedMsgContext, MsgContext, ReplyPayload};
+use claw_claude_code::ClaudeCodeDispatchContext;
 
 use crate::dispatch::ReplyDispatcher;
 
@@ -138,6 +141,10 @@ impl ReplyDispatcher for ChannelReplyBridge {
 /// through the full dispatch pipeline (command detection → agent runtime →
 /// reply delivery).
 ///
+/// When `cc_ctx` is `Some`, messages are routed through the Claude Code CLI
+/// subprocess instead of the direct Anthropic API agent runtime. The Claude
+/// Code path handles `/reset` and `/status` commands natively.
+///
 /// This function runs until the receiver is closed (all senders dropped)
 /// or the cancellation token fires.
 pub async fn run_dispatch_loop(
@@ -145,11 +152,17 @@ pub async fn run_dispatch_loop(
     registry: claw_channels::registry::ChannelRegistry,
     agent_ctx: crate::AgentDispatchContext,
     queue: crate::CommandQueue,
+    cc_ctx: Option<ClaudeCodeDispatchContext>,
     cancel: CancellationToken,
 ) {
     use tracing::info;
 
-    info!("dispatch loop started — waiting for inbound messages");
+    let mode = if cc_ctx.is_some() {
+        "claude-code"
+    } else {
+        "agent-runtime"
+    };
+    info!(mode, "dispatch loop started — waiting for inbound messages");
 
     loop {
         tokio::select! {
@@ -193,54 +206,180 @@ pub async fn run_dispatch_loop(
                     &account_id,
                 );
 
-                // Finalize the MsgContext.
-                let finalized = FinalizedMsgContext::from_msg_context(inbound.msg);
-
-                // Build dispatch options.
-                let options = crate::GetReplyOptions {
-                    run_id: uuid::Uuid::new_v4().to_string(),
-                    cancel: CancellationToken::new(),
-                    on_partial_reply: None,
-                    on_tool_result: None,
-                };
-
-                // Run through the dispatch pipeline with agent runtime.
-                match crate::dispatch_with_agent(
-                    &finalized,
-                    &queue,
-                    &bridge,
-                    &options,
-                    &agent_ctx,
-                )
-                .await
-                {
-                    Ok(result) => {
-                        if let Some(ref err) = result.error {
-                            warn!(
-                                session_key = %result.session_key,
-                                error = %err,
-                                "dispatch completed with error"
-                            );
-                        } else {
-                            info!(
-                                session_key = %result.session_key,
-                                has_reply = result.reply.is_some(),
-                                "dispatch completed successfully"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            channel = %channel_id,
-                            account = %account_id,
-                            error = %e,
-                            "dispatch pipeline error"
-                        );
-                    }
+                // Route based on dispatch mode.
+                if let Some(ref cc) = cc_ctx {
+                    dispatch_via_claude_code(
+                        cc,
+                        &inbound,
+                        &bridge,
+                        cancel.clone(),
+                    )
+                    .await;
+                } else {
+                    dispatch_via_agent_runtime(
+                        &inbound,
+                        &bridge,
+                        &agent_ctx,
+                        &queue,
+                    )
+                    .await;
                 }
             }
         }
     }
 
     info!("dispatch loop exited");
+}
+
+/// Dispatch a message through the Claude Code CLI subprocess.
+///
+/// Handles `/reset` and `/status` slash commands; everything else is sent
+/// as a prompt to Claude Code.
+async fn dispatch_via_claude_code(
+    cc_ctx: &ClaudeCodeDispatchContext,
+    inbound: &InboundMessage,
+    bridge: &ChannelReplyBridge,
+    cancel: CancellationToken,
+) {
+    use tracing::info;
+
+    let body = inbound.msg.body.as_deref().unwrap_or("").trim();
+
+    // Build a session key from channel+account+chat.
+    let chat_id = inbound
+        .msg
+        .from
+        .as_deref()
+        .or(inbound.msg.to.as_deref())
+        .unwrap_or("unknown");
+    let session_key = format!("{}:{}:{}", inbound.channel_id, inbound.account_id, chat_id);
+
+    // Handle slash commands.
+    let reply = if body.eq_ignore_ascii_case("/reset") {
+        match claw_claude_code::dispatch::handle_reset(cc_ctx, &session_key).await {
+            Ok(payload) => Some(payload),
+            Err(e) => {
+                warn!(error = %e, "Claude Code /reset failed");
+                Some(ReplyPayload {
+                    text: Some(format!("Error resetting session: {e}")),
+                    ..Default::default()
+                })
+            }
+        }
+    } else if body.eq_ignore_ascii_case("/status") {
+        match claw_claude_code::dispatch::handle_status(cc_ctx, &session_key).await {
+            Ok(payload) => Some(payload),
+            Err(e) => {
+                warn!(error = %e, "Claude Code /status failed");
+                Some(ReplyPayload {
+                    text: Some(format!("Error getting status: {e}")),
+                    ..Default::default()
+                })
+            }
+        }
+    } else if body.is_empty() {
+        debug!("empty message body, skipping Claude Code dispatch");
+        None
+    } else {
+        // Regular message → send to Claude Code.
+        match claw_claude_code::dispatch::run_claude_code(
+            cc_ctx,
+            &session_key,
+            body,
+            cancel,
+        )
+        .await
+        {
+            Ok(result) => {
+                info!(
+                    session_key,
+                    session_id = ?result.session_id,
+                    turns = ?result.num_turns,
+                    cost = ?result.cost_usd,
+                    "Claude Code dispatch complete"
+                );
+                if result.response_text.is_empty() {
+                    None
+                } else {
+                    Some(ReplyPayload {
+                        text: Some(result.response_text),
+                        ..Default::default()
+                    })
+                }
+            }
+            Err(e) => {
+                warn!(session_key, error = %e, "Claude Code dispatch error");
+                Some(ReplyPayload {
+                    text: Some(format!("Error: {e}")),
+                    ..Default::default()
+                })
+            }
+        }
+    };
+
+    // Send the reply back through the channel.
+    if let Some(ref payload) = reply {
+        if let Err(e) = bridge.send_reply(&session_key, payload).await {
+            warn!(error = %e, "failed to send Claude Code reply");
+        }
+    }
+}
+
+/// Dispatch a message through the agent runtime API (existing path).
+async fn dispatch_via_agent_runtime(
+    inbound: &InboundMessage,
+    bridge: &ChannelReplyBridge,
+    agent_ctx: &crate::AgentDispatchContext,
+    queue: &crate::CommandQueue,
+) {
+    use tracing::info;
+
+    let channel_id = &inbound.channel_id;
+    let account_id = &inbound.account_id;
+
+    // Finalize the MsgContext.
+    let finalized = FinalizedMsgContext::from_msg_context(inbound.msg.clone());
+
+    // Build dispatch options.
+    let options = crate::GetReplyOptions {
+        run_id: uuid::Uuid::new_v4().to_string(),
+        cancel: CancellationToken::new(),
+        on_partial_reply: None,
+        on_tool_result: None,
+    };
+
+    // Run through the dispatch pipeline with agent runtime.
+    match crate::dispatch_with_agent(
+        &finalized,
+        queue,
+        bridge,
+        &options,
+        agent_ctx,
+    )
+    .await
+    {
+        Ok(result) => {
+            if let Some(ref err) = result.error {
+                warn!(
+                    session_key = %result.session_key,
+                    error = %err,
+                    "dispatch completed with error"
+                );
+            } else {
+                info!(
+                    session_key = %result.session_key,
+                    has_reply = result.reply.is_some(),
+                    "dispatch completed successfully"
+                );
+            }
+        }
+        Err(e) => {
+            warn!(
+                channel = %channel_id,
+                account = %account_id,
+                error = %e,
+                "dispatch pipeline error"
+            );
+        }
+    }
 }
