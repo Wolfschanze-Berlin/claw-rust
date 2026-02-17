@@ -7,15 +7,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
+use claw_channels::manager::ChannelManager;
 use claw_channels::registry::ChannelRegistry;
 use claw_config::types::{BindMode, OpenClawConfig};
 use claw_config::load_config;
-use claw_core::backoff::BackoffPolicy;
 use claw_core::runtime::{RuntimeEnv, init_tracing};
 use claw_db::Database;
-use claw_gateway::channel_manager::ChannelManager;
 use claw_gateway::handshake::AuthMode;
 use claw_gateway::server::{GatewayBindMode, GatewayServerOptions, start_gateway_server};
 
@@ -64,14 +63,15 @@ async fn main() -> Result<()> {
         "channel plugins registered: {:?}",
         registry.list_ids()
     );
-    let channel_mgr = ChannelManager::new(
-        registry,
-        BackoffPolicy::default(),
-        RuntimeEnv::new("channels"),
-        cancel.clone(),
-    );
-    if let Err(e) = channel_mgr.start_channels().await {
-        error!(error = %e, "failed to start channels");
+    let runtime = RuntimeEnv::new("channels");
+    let channel_mgr = ChannelManager::new(registry, cancel.clone());
+
+    // Start channels from config — iterates config.channels, finds matching
+    // registered plugins, and spawns a gateway task per account.
+    if let Some(ref channel_configs) = config.channels {
+        channel_mgr.start_channels(channel_configs, &runtime);
+    } else {
+        warn!("no channels configured in config file");
     }
 
     info!("application ready — press Ctrl+C to stop");
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
 
     // 8. Graceful shutdown.
     gateway.close("application shutdown").await;
-    channel_mgr.shutdown().await;
+    channel_mgr.stop_all();
 
     info!("shutdown complete");
     Ok(())
