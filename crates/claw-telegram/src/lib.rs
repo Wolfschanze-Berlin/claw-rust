@@ -11,3 +11,17 @@ pub mod outbound;
 pub mod plugin;
 
 pub use plugin::TelegramPlugin;
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+/// Shared store of teloxide Bot instances keyed by account ID.
+///
+/// The gateway registers bots here when starting accounts; outbound and
+/// adapter methods look them up by account_id at send time.
+pub type BotStore = Arc<RwLock<HashMap<String, teloxide::Bot>>>;
+
+/// Create a new empty bot store.
+pub fn new_bot_store() -> BotStore {
+    Arc::new(RwLock::new(HashMap::new()))
+}

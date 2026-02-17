@@ -15,6 +15,7 @@ use crate::adapters::{
 };
 use crate::gateway::TelegramGateway;
 use crate::outbound::TelegramOutbound;
+use crate::{BotStore, new_bot_store};
 
 /// Telegram channel plugin — wraps the Telegram Bot API.
 pub struct TelegramPlugin {
@@ -30,6 +31,8 @@ pub struct TelegramPlugin {
 
 impl TelegramPlugin {
     pub fn new() -> Self {
+        let bots: BotStore = new_bot_store();
+
         Self {
             meta: ChannelMeta {
                 id: "telegram".into(),
@@ -58,12 +61,12 @@ impl TelegramPlugin {
                 native_commands: Some(true),
                 block_streaming: Some(false),
             },
-            gateway: TelegramGateway::new(),
-            outbound: TelegramOutbound::new(),
+            gateway: TelegramGateway::new(bots.clone()),
+            outbound: TelegramOutbound::new(bots.clone()),
             mention: TelegramMentionAdapter::new(),
-            command: TelegramCommandAdapter::new(),
-            message_action: TelegramMessageActionAdapter::new(),
-            streaming: TelegramStreamingAdapter::new(),
+            command: TelegramCommandAdapter::new(bots.clone()),
+            message_action: TelegramMessageActionAdapter::new(bots.clone()),
+            streaming: TelegramStreamingAdapter::new(bots),
         }
     }
 }

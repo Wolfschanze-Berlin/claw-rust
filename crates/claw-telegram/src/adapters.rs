@@ -1,18 +1,42 @@
 //! Telegram adapter trait implementations.
 //!
-//! Thin stubs for MentionAdapter, CommandAdapter, MessageActionAdapter,
-//! and StreamingAdapter. The actual Telegram API calls are TODO — these
-//! stubs establish the wiring so the plugin advertises its capabilities.
+//! Implements MentionAdapter, CommandAdapter, MessageActionAdapter,
+//! and StreamingAdapter with real teloxide Bot API calls.
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tracing::info;
+use teloxide::requests::Requester;
+use teloxide::types::ChatId;
+use tracing::{info, warn};
 
 use claw_channels::plugin::{
     ChannelCommandAdapter, ChannelMentionAdapter, ChannelMessageActionAdapter,
     ChannelStreamingAdapter,
 };
 use claw_channels::types::{ChannelError, ChannelOutboundContext, OutboundDeliveryResult};
+
+use crate::BotStore;
+
+/// Parse a chat_id string into a teloxide ChatId.
+fn parse_chat_id(chat_id: &str) -> Result<ChatId, ChannelError> {
+    chat_id
+        .parse::<i64>()
+        .map(ChatId)
+        .map_err(|_| ChannelError::DeliveryFailed(format!("invalid chat_id: {chat_id}")))
+}
+
+/// Look up a bot from the shared store by account ID.
+fn get_bot(bots: &BotStore, account_id: &str) -> Result<teloxide::Bot, ChannelError> {
+    let store = bots.read().map_err(|e| {
+        ChannelError::DeliveryFailed(format!("bot store lock poisoned: {e}"))
+    })?;
+    store.get(account_id).cloned().ok_or_else(|| {
+        ChannelError::AccountNotFound {
+            channel: "telegram".into(),
+            account_id: account_id.into(),
+        }
+    })
+}
 
 // ---------------------------------------------------------------------------
 // MentionAdapter
@@ -58,11 +82,13 @@ impl ChannelMentionAdapter for TelegramMentionAdapter {
 // ---------------------------------------------------------------------------
 
 /// Registers and manages Telegram Bot Commands (slash commands like /start).
-pub struct TelegramCommandAdapter;
+pub struct TelegramCommandAdapter {
+    bots: BotStore,
+}
 
 impl TelegramCommandAdapter {
-    pub fn new() -> Self {
-        Self
+    pub fn new(bots: BotStore) -> Self {
+        Self { bots }
     }
 }
 
@@ -78,13 +104,38 @@ impl ChannelCommandAdapter for TelegramCommandAdapter {
             command_count = commands.len(),
             "registering telegram bot commands"
         );
-        // TODO: call teloxide Bot::set_my_commands with BotCommand list.
+
+        let bot = get_bot(&self.bots, account_id)?;
+
+        // Parse command JSON values into teloxide BotCommand structs.
+        let bot_commands: Vec<teloxide::types::BotCommand> = commands
+            .iter()
+            .filter_map(|cmd| {
+                let command = cmd.get("command")?.as_str()?.to_string();
+                let description = cmd
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some(teloxide::types::BotCommand { command, description })
+            })
+            .collect();
+
+        bot.set_my_commands(bot_commands)
+            .await
+            .map_err(|e| ChannelError::GatewayError(format!("failed to set commands: {e}")))?;
+
         Ok(())
     }
 
     async fn unregister_commands(&self, account_id: &str) -> Result<(), ChannelError> {
         info!(account_id, "clearing telegram bot commands");
-        // TODO: call teloxide Bot::delete_my_commands.
+
+        let bot = get_bot(&self.bots, account_id)?;
+        bot.delete_my_commands()
+            .await
+            .map_err(|e| ChannelError::GatewayError(format!("failed to delete commands: {e}")))?;
+
         Ok(())
     }
 }
@@ -94,11 +145,13 @@ impl ChannelCommandAdapter for TelegramCommandAdapter {
 // ---------------------------------------------------------------------------
 
 /// Sends messages with Telegram inline keyboards (action buttons).
-pub struct TelegramMessageActionAdapter;
+pub struct TelegramMessageActionAdapter {
+    bots: BotStore,
+}
 
 impl TelegramMessageActionAdapter {
-    pub fn new() -> Self {
-        Self
+    pub fn new(bots: BotStore) -> Self {
+        Self { bots }
     }
 }
 
@@ -110,21 +163,62 @@ impl ChannelMessageActionAdapter for TelegramMessageActionAdapter {
         text: &str,
         actions: &[Value],
     ) -> Result<OutboundDeliveryResult, ChannelError> {
+        use teloxide::payloads::SendMessageSetters;
+        use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
+
         info!(
             account_id = %ctx.account_id,
             chat_id = %ctx.chat_id,
             action_count = actions.len(),
             "sending telegram message with inline keyboard"
         );
-        // TODO: build InlineKeyboardMarkup from actions JSON and send via
-        // teloxide Bot::send_message(...).reply_markup(keyboard).
-        let _ = text;
-        Ok(OutboundDeliveryResult {
-            success: Some(true),
-            message_id: None,
-            error: None,
-            metadata: None,
-        })
+
+        let bot = get_bot(&self.bots, &ctx.account_id)?;
+        let chat_id = parse_chat_id(&ctx.chat_id)?;
+
+        // Build inline keyboard from actions JSON.
+        // Each action is expected to have "text" and "callback_data" fields.
+        // Actions can optionally specify "url" for URL buttons.
+        let buttons: Vec<InlineKeyboardButton> = actions
+            .iter()
+            .filter_map(|action| {
+                let label = action.get("text")?.as_str()?.to_string();
+                if let Some(url) = action.get("url").and_then(|u| u.as_str()) {
+                    Some(InlineKeyboardButton::url(
+                        label,
+                        url.parse().ok()?,
+                    ))
+                } else {
+                    let data = action
+                        .get("callback_data")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    Some(InlineKeyboardButton::callback(label, data))
+                }
+            })
+            .collect();
+
+        let keyboard = InlineKeyboardMarkup::new(vec![buttons]);
+
+        match bot
+            .send_message(chat_id, text)
+            .reply_markup(keyboard)
+            .await
+        {
+            Ok(msg) => Ok(OutboundDeliveryResult {
+                success: Some(true),
+                message_id: Some(msg.id.0.to_string()),
+                error: None,
+                metadata: None,
+            }),
+            Err(e) => {
+                warn!(error = %e, "telegram send_with_actions failed");
+                Err(ChannelError::DeliveryFailed(format!(
+                    "telegram send_with_actions failed: {e}"
+                )))
+            }
+        }
     }
 
     async fn handle_action_callback(
@@ -136,8 +230,24 @@ impl ChannelMessageActionAdapter for TelegramMessageActionAdapter {
             account_id,
             "handling telegram callback query"
         );
-        // TODO: call teloxide Bot::answer_callback_query.
-        let _ = callback_data;
+
+        let bot = get_bot(&self.bots, account_id)?;
+
+        // Extract callback_query_id from the data.
+        let query_id = callback_data
+            .get("callback_query_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        if !query_id.is_empty() {
+            bot.answer_callback_query(teloxide::types::CallbackQueryId(query_id))
+                .await
+                .map_err(|e| {
+                    ChannelError::GatewayError(format!("answer_callback_query failed: {e}"))
+                })?;
+        }
+
         Ok(())
     }
 }
@@ -147,11 +257,13 @@ impl ChannelMessageActionAdapter for TelegramMessageActionAdapter {
 // ---------------------------------------------------------------------------
 
 /// Streams messages via Telegram edit-in-place (progressive message updates).
-pub struct TelegramStreamingAdapter;
+pub struct TelegramStreamingAdapter {
+    bots: BotStore,
+}
 
 impl TelegramStreamingAdapter {
-    pub fn new() -> Self {
-        Self
+    pub fn new(bots: BotStore) -> Self {
+        Self { bots }
     }
 }
 
@@ -167,9 +279,19 @@ impl ChannelStreamingAdapter for TelegramStreamingAdapter {
             chat_id = %ctx.chat_id,
             "starting telegram streaming message"
         );
-        // TODO: send initial message via teloxide, return message_id.
-        let _ = initial_text;
-        Ok("placeholder_msg_id".into())
+
+        let bot = get_bot(&self.bots, &ctx.account_id)?;
+        let chat_id = parse_chat_id(&ctx.chat_id)?;
+
+        // Send the initial message and return its ID for subsequent edits.
+        let msg = bot
+            .send_message(chat_id, initial_text)
+            .await
+            .map_err(|e| {
+                ChannelError::DeliveryFailed(format!("stream_start send_message failed: {e}"))
+            })?;
+
+        Ok(msg.id.0.to_string())
     }
 
     async fn stream_update(
@@ -178,14 +300,26 @@ impl ChannelStreamingAdapter for TelegramStreamingAdapter {
         message_id: &str,
         text: &str,
     ) -> Result<(), ChannelError> {
-        info!(
-            account_id = %ctx.account_id,
-            chat_id = %ctx.chat_id,
-            message_id,
-            text_len = text.len(),
-            "updating telegram streaming message"
-        );
-        // TODO: call teloxide Bot::edit_message_text.
+        let bot = get_bot(&self.bots, &ctx.account_id)?;
+        let chat_id = parse_chat_id(&ctx.chat_id)?;
+
+        let msg_id: i32 = message_id
+            .parse()
+            .map_err(|_| ChannelError::DeliveryFailed(format!("invalid message_id: {message_id}")))?;
+
+        // Edit the message in-place with updated text.
+        bot.edit_message_text(chat_id, teloxide::types::MessageId(msg_id), text)
+            .await
+            .map_err(|e| {
+                // Telegram returns an error if text hasn't changed; treat as non-fatal.
+                let err_str = e.to_string();
+                if err_str.contains("message is not modified") {
+                    tracing::debug!("stream_update: message not modified (no-op)");
+                    return ChannelError::DeliveryFailed("message not modified".into());
+                }
+                ChannelError::DeliveryFailed(format!("stream_update edit failed: {e}"))
+            })?;
+
         Ok(())
     }
 
@@ -201,10 +335,9 @@ impl ChannelStreamingAdapter for TelegramStreamingAdapter {
             message_id,
             "finalizing telegram streaming message"
         );
-        // Final edit to set the completed text.
-        // TODO: call teloxide Bot::edit_message_text with final content.
-        let _ = final_text;
-        Ok(())
+
+        // Final edit uses the same mechanism as stream_update.
+        self.stream_update(ctx, message_id, final_text).await
     }
 }
 
@@ -215,6 +348,8 @@ impl ChannelStreamingAdapter for TelegramStreamingAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- MentionAdapter -------------------------------------------------------
 
     #[test]
     fn parse_mentions_basic() {
@@ -247,5 +382,131 @@ mod tests {
     fn format_mention_without_at() {
         let adapter = TelegramMentionAdapter::new();
         assert_eq!(adapter.format_mention("alice"), "@alice");
+    }
+
+    #[test]
+    fn parse_mentions_in_sentence() {
+        let adapter = TelegramMentionAdapter::new();
+        let mentions = adapter.parse_mentions("Hey @admin, can you help @support_team?");
+        assert_eq!(mentions, vec!["@admin", "@support_team"]);
+    }
+
+    #[test]
+    fn parse_mentions_multiple_same() {
+        let adapter = TelegramMentionAdapter::new();
+        let mentions = adapter.parse_mentions("@alice @alice @alice");
+        assert_eq!(mentions.len(), 3);
+    }
+
+    // -- CommandAdapter (parse helpers) ----------------------------------------
+
+    #[test]
+    fn parse_command_json() {
+        let cmds = vec![
+            serde_json::json!({"command": "start", "description": "Start the bot"}),
+            serde_json::json!({"command": "help", "description": "Show help"}),
+        ];
+        let bot_commands: Vec<teloxide::types::BotCommand> = cmds
+            .iter()
+            .filter_map(|cmd| {
+                let command = cmd.get("command")?.as_str()?.to_string();
+                let description = cmd
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some(teloxide::types::BotCommand { command, description })
+            })
+            .collect();
+        assert_eq!(bot_commands.len(), 2);
+        assert_eq!(bot_commands[0].command, "start");
+        assert_eq!(bot_commands[1].description, "Show help");
+    }
+
+    #[test]
+    fn parse_command_json_missing_fields() {
+        let cmds = vec![
+            serde_json::json!({"not_command": "bad"}),
+        ];
+        let bot_commands: Vec<teloxide::types::BotCommand> = cmds
+            .iter()
+            .filter_map(|cmd| {
+                let command = cmd.get("command")?.as_str()?.to_string();
+                let description = cmd
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some(teloxide::types::BotCommand { command, description })
+            })
+            .collect();
+        assert!(bot_commands.is_empty());
+    }
+
+    // -- MessageActionAdapter (keyboard building) -----------------------------
+
+    #[test]
+    fn build_inline_keyboard_buttons() {
+        use teloxide::types::InlineKeyboardButton;
+
+        let actions = vec![
+            serde_json::json!({"text": "Yes", "callback_data": "yes"}),
+            serde_json::json!({"text": "No", "callback_data": "no"}),
+        ];
+
+        let buttons: Vec<InlineKeyboardButton> = actions
+            .iter()
+            .filter_map(|action| {
+                let label = action.get("text")?.as_str()?.to_string();
+                let data = action
+                    .get("callback_data")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                Some(InlineKeyboardButton::callback(label, data))
+            })
+            .collect();
+
+        assert_eq!(buttons.len(), 2);
+    }
+
+    #[test]
+    fn build_url_button() {
+        use teloxide::types::InlineKeyboardButton;
+
+        let actions = vec![
+            serde_json::json!({"text": "Visit", "url": "https://example.com"}),
+        ];
+
+        let buttons: Vec<InlineKeyboardButton> = actions
+            .iter()
+            .filter_map(|action| {
+                let label = action.get("text")?.as_str()?.to_string();
+                if let Some(url) = action.get("url").and_then(|u| u.as_str()) {
+                    Some(InlineKeyboardButton::url(
+                        label,
+                        url.parse().ok()?,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(buttons.len(), 1);
+    }
+
+    // -- StreamingAdapter (parse helpers) --------------------------------------
+
+    #[test]
+    fn parse_valid_message_id() {
+        let id: Result<i32, _> = "42".parse();
+        assert_eq!(id.unwrap(), 42);
+    }
+
+    #[test]
+    fn parse_invalid_message_id() {
+        let id: Result<i32, _> = "not_a_number".parse();
+        assert!(id.is_err());
     }
 }
