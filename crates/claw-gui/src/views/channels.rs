@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use eframe::egui;
 
-use claw_config::ChannelConfig;
+use claw_config::{ChannelAccountConfig, ChannelConfig};
 
 use crate::config_manager::ConfigManager;
 use crate::theme;
@@ -27,12 +27,55 @@ pub enum ChannelAction {
 // Persistent UI state for the channels view
 // ---------------------------------------------------------------------------
 
+/// Supported channel platforms for the creation picker.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChannelPlatform {
+    Telegram,
+    Discord,
+    WhatsApp,
+    Custom,
+}
+
+impl ChannelPlatform {
+    /// All available platform choices.
+    const ALL: &[ChannelPlatform] = &[
+        ChannelPlatform::Telegram,
+        ChannelPlatform::Discord,
+        ChannelPlatform::WhatsApp,
+        ChannelPlatform::Custom,
+    ];
+
+    /// Display label for the platform picker.
+    fn label(self) -> &'static str {
+        match self {
+            ChannelPlatform::Telegram => "Telegram",
+            ChannelPlatform::Discord => "Discord",
+            ChannelPlatform::WhatsApp => "WhatsApp",
+            ChannelPlatform::Custom => "Custom",
+        }
+    }
+
+    /// Default channel key name derived from platform.
+    fn default_key(self) -> &'static str {
+        match self {
+            ChannelPlatform::Telegram => "telegram",
+            ChannelPlatform::Discord => "discord",
+            ChannelPlatform::WhatsApp => "whatsapp",
+            ChannelPlatform::Custom => "",
+        }
+    }
+}
+
 /// UI state that persists across frames for the channels list.
 pub struct ChannelsViewState {
     /// Currently selected channel key (if any).
     pub selected: Option<String>,
     /// Text buffer for the "new channel name" input.
     pub new_channel_name: String,
+    /// Selected platform for new channel creation.
+    pub new_channel_platform: ChannelPlatform,
+    /// Whether the creation section is expanded.
+    pub create_section_open: bool,
     /// Detail form state for the selected channel.
     pub detail_state: Option<ChannelDetailState>,
     /// Whether we've already taken an undo snapshot for this detail session.
@@ -44,6 +87,8 @@ impl Default for ChannelsViewState {
         Self {
             selected: None,
             new_channel_name: String::new(),
+            new_channel_platform: ChannelPlatform::Telegram,
+            create_section_open: false,
             detail_state: None,
             detail_snapshot_taken: false,
         }
@@ -92,38 +137,130 @@ fn show_list(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Channels
     });
     ui.add_space(8.0);
 
-    // Add channel row
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("New channel:").color(theme::SUBTEXT));
-        ui.text_edit_singleline(&mut state.new_channel_name);
+    // Add channel — collapsible creation section with platform picker
+    let toggle_label = if state.create_section_open {
+        "\u{25bc} New Channel"
+    } else {
+        "\u{25b6} New Channel"
+    };
+    if ui
+        .add(egui::Button::new(
+            egui::RichText::new(toggle_label).color(theme::BLUE),
+        ))
+        .clicked()
+    {
+        state.create_section_open = !state.create_section_open;
+    }
 
-        let name = state.new_channel_name.trim().to_lowercase();
-        let exists = config
-            .draft()
-            .channels
-            .as_ref()
-            .is_some_and(|m| m.contains_key(&name));
-        let valid = !name.is_empty() && !exists;
+    if state.create_section_open {
+        egui::Frame::default()
+            .fill(theme::SURFACE0)
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                // Platform picker
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Platform:").color(theme::SUBTEXT));
+                    for platform in ChannelPlatform::ALL {
+                        let selected = state.new_channel_platform == *platform;
+                        if ui.selectable_label(selected, platform.label()).clicked() {
+                            state.new_channel_platform = *platform;
+                            // Auto-fill name from platform if name is empty or was auto-filled
+                            let current = state.new_channel_name.trim().to_lowercase();
+                            let is_auto = ChannelPlatform::ALL
+                                .iter()
+                                .any(|p| p.default_key() == current);
+                            if current.is_empty() || is_auto {
+                                state.new_channel_name =
+                                    platform.default_key().to_string();
+                            }
+                        }
+                    }
+                });
 
-        if ui
-            .add_enabled(
-                valid,
-                egui::Button::new(egui::RichText::new("+ Add").color(theme::GREEN)),
-            )
-            .clicked()
-        {
-            config.begin_edit();
-            let channels = config.draft_mut().channels.get_or_insert_with(HashMap::new);
-            channels.insert(
-                name,
-                ChannelConfig {
-                    enabled: Some(true),
-                    ..Default::default()
-                },
-            );
-            state.new_channel_name.clear();
-        }
-    });
+                ui.add_space(4.0);
+
+                // Channel name
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Name:").color(theme::SUBTEXT));
+                    ui.text_edit_singleline(&mut state.new_channel_name);
+                });
+
+                ui.add_space(4.0);
+
+                // Platform hint
+                let hint = match state.new_channel_platform {
+                    ChannelPlatform::Telegram => "Creates a Telegram channel with bot token account fields.",
+                    ChannelPlatform::Discord => "Creates a Discord channel with bot token and application ID fields.",
+                    ChannelPlatform::WhatsApp => "Creates a WhatsApp channel with session and pairing fields.",
+                    ChannelPlatform::Custom => "Creates a blank channel — configure all fields manually.",
+                };
+                ui.label(
+                    egui::RichText::new(hint)
+                        .color(theme::OVERLAY)
+                        .small()
+                        .italics(),
+                );
+
+                ui.add_space(4.0);
+
+                // Create button
+                let name = state.new_channel_name.trim().to_lowercase();
+                let exists = config
+                    .draft()
+                    .channels
+                    .as_ref()
+                    .is_some_and(|m| m.contains_key(&name));
+                let valid = !name.is_empty() && !exists;
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            valid,
+                            egui::Button::new(
+                                egui::RichText::new(format!(
+                                    "+ Create {} Channel",
+                                    state.new_channel_platform.label()
+                                ))
+                                .color(theme::GREEN),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        config.begin_edit();
+                        let channels =
+                            config.draft_mut().channels.get_or_insert_with(HashMap::new);
+
+                        // Build platform-appropriate default config
+                        let mut ch = ChannelConfig {
+                            enabled: Some(true),
+                            ..Default::default()
+                        };
+
+                        // Pre-populate a default account with platform-specific hint
+                        if state.new_channel_platform != ChannelPlatform::Custom {
+                            let mut account = ChannelAccountConfig::default();
+                            account.bot_token = Some(String::new());
+                            let mut accounts = HashMap::new();
+                            accounts.insert("default".to_string(), account);
+                            ch.accounts = Some(accounts);
+                        }
+
+                        channels.insert(name, ch);
+                        state.new_channel_name.clear();
+                        state.create_section_open = false;
+                    }
+
+                    if !valid && !state.new_channel_name.trim().is_empty() && exists {
+                        ui.label(
+                            egui::RichText::new("Name already exists")
+                                .color(theme::YELLOW)
+                                .small(),
+                        );
+                    }
+                });
+            });
+    }
 
     ui.add_space(8.0);
     ui.separator();
