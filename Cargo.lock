@@ -1109,6 +1109,7 @@ dependencies = [
  "claw-channels",
  "claw-config",
  "claw-core",
+ "reqwest",
  "serde",
  "serde_json",
  "teloxide",
