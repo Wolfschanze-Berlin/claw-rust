@@ -136,17 +136,25 @@ pub fn show(
 
 fn bind_mode_to_str(mode: &BindMode) -> &'static str {
     match mode {
+        BindMode::Auto => "auto",
         BindMode::Localhost => "localhost",
+        BindMode::Loopback => "loopback",
         BindMode::Lan => "lan",
+        BindMode::Tailnet => "tailnet",
         BindMode::All => "all",
+        BindMode::Custom => "custom",
     }
 }
 
 fn str_to_bind_mode(s: &str) -> Option<BindMode> {
     match s {
+        "auto" => Some(BindMode::Auto),
         "localhost" => Some(BindMode::Localhost),
+        "loopback" => Some(BindMode::Loopback),
         "lan" => Some(BindMode::Lan),
+        "tailnet" => Some(BindMode::Tailnet),
         "all" => Some(BindMode::All),
+        "custom" => Some(BindMode::Custom),
         _ => None,
     }
 }
@@ -169,13 +177,18 @@ fn show_gateway(
 
     // Port
     ui.horizontal(|ui| {
-        changed |= form_field::number_field_u16(ui, "Port", &mut gw.port);
+        changed |= form_field::number_field_u16(ui, "Port", &mut gw.port, 3000);
         validation_badge::validation_badge(ui, "gateway.port", validation);
     });
 
     // Bind mode — convert between BindMode and Option<String> for select_field
     let mut bind_str = gw.bind.as_ref().map(|b| bind_mode_to_str(b).to_string());
-    if form_field::select_field(ui, "Bind", &mut bind_str, &["localhost", "lan", "all"]) {
+    if form_field::select_field(
+        ui,
+        "Bind",
+        &mut bind_str,
+        &["auto", "localhost", "loopback", "lan", "tailnet", "all", "custom"],
+    ) {
         gw.bind = bind_str.as_deref().and_then(str_to_bind_mode);
         changed = true;
     }

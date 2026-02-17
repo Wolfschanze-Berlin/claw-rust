@@ -125,8 +125,16 @@ pub fn bool_field(ui: &mut egui::Ui, label: &str, value: &mut Option<bool>) -> b
 
 /// Render a labeled number input for `Option<u16>`.
 ///
-/// Uses a [`egui::DragValue`] clamped to `0..=65535`.
-pub fn number_field_u16(ui: &mut egui::Ui, label: &str, value: &mut Option<u16>) -> bool {
+/// Uses a [`egui::DragValue`] clamped to `1..=65535`.
+/// When the user clicks "Set", the field initializes to `initial` instead
+/// of zero so that validation rules (e.g. "port must be >= 1") aren't
+/// violated by the default value.
+pub fn number_field_u16(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut Option<u16>,
+    initial: u16,
+) -> bool {
     let mut changed = false;
 
     ui.horizontal(|ui| {
@@ -136,7 +144,7 @@ pub fn number_field_u16(ui: &mut egui::Ui, label: &str, value: &mut Option<u16>)
             Some(n) => {
                 let mut val = *n as f64;
                 let response =
-                    ui.add(egui::DragValue::new(&mut val).range(0.0..=65535.0).speed(1.0));
+                    ui.add(egui::DragValue::new(&mut val).range(1.0..=65535.0).speed(1.0));
                 if response.changed() {
                     *n = val as u16;
                     changed = true;
@@ -153,7 +161,7 @@ pub fn number_field_u16(ui: &mut egui::Ui, label: &str, value: &mut Option<u16>)
             None => {
                 ui.label(egui::RichText::new("Not set").color(theme::OVERLAY).italics());
                 if ui.small_button("Set").clicked() {
-                    *value = Some(0);
+                    *value = Some(initial);
                     changed = true;
                 }
             }
