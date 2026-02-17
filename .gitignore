@@ -5,9 +5,3 @@
 .env
 .env.*
 !.env.example
-
-# Machine-specific cargo config
-/.cargo/
-
-# Claude session data
-.claude/retrospectives/
