@@ -213,6 +213,15 @@ fn show_add_form(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Agen
         return;
     }
 
+    // Check if there are existing agents (in agents/ directory) to clone from
+    let has_clone_sources = !state.templates.is_empty();
+
+    // Auto-fallback: if in Clone mode but no agents exist, switch to Blank
+    if state.create_mode == AgentCreateMode::Clone && !has_clone_sources {
+        state.create_mode = AgentCreateMode::Blank;
+        state.clone_source = None;
+    }
+
     egui::Frame::default()
         .fill(theme::SURFACE0)
         .corner_radius(egui::CornerRadius::same(8))
@@ -232,15 +241,18 @@ fn show_add_form(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Agen
                     state.clone_source = None;
                     state.template_source = None;
                 }
-                if ui
-                    .selectable_label(
-                        state.create_mode == AgentCreateMode::Clone,
-                        "Clone Existing",
-                    )
-                    .clicked()
-                {
-                    state.create_mode = AgentCreateMode::Clone;
-                    state.template_source = None;
+                // Only show "Clone Existing" when there are agents/ directories to clone from
+                if has_clone_sources {
+                    if ui
+                        .selectable_label(
+                            state.create_mode == AgentCreateMode::Clone,
+                            "Clone Existing",
+                        )
+                        .clicked()
+                    {
+                        state.create_mode = AgentCreateMode::Clone;
+                        state.template_source = None;
+                    }
                 }
                 if !state.templates.is_empty() {
                     if ui
@@ -324,70 +336,76 @@ fn show_add_form(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Agen
                 ui.add_space(4.0);
             }
 
-            // Clone source picker (only shown in Clone mode)
+            // Clone source picker (only shown in Clone mode — sources from agents/ directory)
             if state.create_mode == AgentCreateMode::Clone {
-                let agents_list = config
-                    .draft()
-                    .agents
-                    .as_ref()
-                    .and_then(|a| a.list.as_ref());
-
-                if let Some(list) = agents_list {
-                    if list.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No agents to clone from.")
-                                .color(theme::YELLOW)
-                                .small(),
-                        );
-                    } else {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Clone from:").color(theme::SUBTEXT),
-                            );
-
-                            let selected_label = state
-                                .clone_source
-                                .and_then(|idx| list.get(idx))
-                                .and_then(|a| a.id.as_deref())
-                                .unwrap_or("Select agent...");
-
-                            egui::ComboBox::from_id_salt("clone_source")
-                                .selected_text(selected_label)
-                                .show_ui(ui, |ui| {
-                                    for (idx, agent) in list.iter().enumerate() {
-                                        let label = agent
-                                            .id
-                                            .as_deref()
-                                            .unwrap_or("<no id>");
-                                        if ui
-                                            .selectable_value(
-                                                &mut state.clone_source,
-                                                Some(idx),
-                                                label,
-                                            )
-                                            .changed()
-                                        {
-                                            // Auto-fill name as "Copy of <source>"
-                                            if state.new_agent_name.is_empty() {
-                                                let source_name = agent
-                                                    .name
-                                                    .as_deref()
-                                                    .or(agent.id.as_deref())
-                                                    .unwrap_or("agent");
-                                                state.new_agent_name =
-                                                    format!("Copy of {source_name}");
-                                            }
-                                        }
-                                    }
-                                });
-                        });
-                    }
-                } else {
+                let templates = &state.templates;
+                if templates.is_empty() {
                     ui.label(
-                        egui::RichText::new("No agents to clone from.")
+                        egui::RichText::new("No agents found in agents/ directory.")
                             .color(theme::YELLOW)
                             .small(),
                     );
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Clone from:").color(theme::SUBTEXT),
+                        );
+
+                        let selected_label = state
+                            .clone_source
+                            .and_then(|idx| templates.get(idx))
+                            .map(|t| t.dir_name.as_str())
+                            .unwrap_or("Select agent...");
+
+                        egui::ComboBox::from_id_salt("clone_source")
+                            .selected_text(selected_label)
+                            .show_ui(ui, |ui| {
+                                for (idx, tmpl) in templates.iter().enumerate() {
+                                    let label = &tmpl.dir_name;
+                                    if ui
+                                        .selectable_value(
+                                            &mut state.clone_source,
+                                            Some(idx),
+                                            label,
+                                        )
+                                        .changed()
+                                    {
+                                        // Auto-fill ID and name from template dir name
+                                        if state.new_agent_id.is_empty() {
+                                            state.new_agent_id = tmpl.dir_name.clone();
+                                        }
+                                        if state.new_agent_name.is_empty() {
+                                            state.new_agent_name =
+                                                format!("Copy of {}", tmpl.dir_name);
+                                        }
+                                    }
+                                }
+                            });
+                    });
+
+                    // Show template info when selected
+                    if let Some(idx) = state.clone_source {
+                        if let Some(tmpl) = templates.get(idx) {
+                            let mut info_parts = Vec::new();
+                            if tmpl.has_workspace {
+                                info_parts.push("has workspace/");
+                            }
+                            if tmpl.has_config {
+                                info_parts.push("has config/");
+                            }
+                            let info = if info_parts.is_empty() {
+                                "empty agent directory".to_string()
+                            } else {
+                                info_parts.join(", ")
+                            };
+                            ui.label(
+                                egui::RichText::new(format!("  {}", info))
+                                    .color(theme::OVERLAY)
+                                    .small()
+                                    .italics(),
+                            );
+                        }
+                    }
                 }
 
                 ui.add_space(4.0);
@@ -450,11 +468,26 @@ fn show_add_form(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut Agen
 
                     let mut new_agent = match state.create_mode {
                         AgentCreateMode::Clone => {
-                            // Clone from source agent
-                            state
+                            // Clone from agents/ directory template
+                            let mut entry = AgentEntry::default();
+                            if let Some(tmpl) = state
                                 .clone_source
-                                .and_then(|idx| list.get(idx).cloned())
-                                .unwrap_or_default()
+                                .and_then(|idx| state.templates.get(idx))
+                            {
+                                let agent_dir = tmpl.path.canonicalize()
+                                    .unwrap_or_else(|_| tmpl.path.clone());
+                                if tmpl.has_workspace {
+                                    entry.workspace = Some(
+                                        agent_dir.join("workspace")
+                                            .to_string_lossy()
+                                            .into_owned(),
+                                    );
+                                }
+                                entry.agent_dir = Some(
+                                    agent_dir.to_string_lossy().into_owned(),
+                                );
+                            }
+                            entry
                         }
                         AgentCreateMode::Template => {
                             // Create from template directory
