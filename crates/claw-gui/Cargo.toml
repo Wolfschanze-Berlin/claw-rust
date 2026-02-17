@@ -17,6 +17,9 @@ chrono.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+semver.workspace = true
+futures-util.workspace = true
 claw-config = { path = "../claw-config" }
 
 [dev-dependencies]

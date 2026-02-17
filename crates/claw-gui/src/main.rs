@@ -7,6 +7,7 @@ mod config_manager;
 mod logging;
 mod state;
 mod theme;
+mod update_checker;
 mod views;
 mod widgets;
 
@@ -33,6 +34,8 @@ enum View {
     ConfigChannels,
     ConfigAgents,
     Bindings,
+    // -- About section --
+    About,
 }
 
 /// Main application struct implementing eframe::App.
@@ -49,6 +52,15 @@ struct ClawApp {
     channels_view_state: views::channels::ChannelsViewState,
     agents_view_state: views::agents::AgentsViewState,
     commit_state: views::commit_workflow::CommitWorkflowState,
+    about_view_state: views::about::AboutViewState,
+    /// Background update checker for GitHub releases.
+    update_checker: update_checker::UpdateChecker,
+    /// Background update downloader (created on first download request).
+    update_downloader: Option<update_checker::UpdateDownloader>,
+    /// Whether the user dismissed the update banner for the current version.
+    banner_dismissed: bool,
+    /// Which version was dismissed, so the banner reappears for newer versions.
+    dismissed_version: Option<String>,
     /// Optional channel name filter for the Logs view.
     log_channel_filter: Option<String>,
 }
@@ -75,6 +87,13 @@ impl ClawApp {
             }
         };
 
+        let mut update_checker = update_checker::UpdateChecker::new(cc.egui_ctx.clone());
+
+        // Trigger an automatic update check on launch if the cache has expired
+        if update_checker.should_check() {
+            update_checker.trigger_check();
+        }
+
         Self {
             current_view: View::Dashboard,
             state,
@@ -87,6 +106,11 @@ impl ClawApp {
             channels_view_state: Default::default(),
             agents_view_state: Default::default(),
             commit_state: Default::default(),
+            about_view_state: Default::default(),
+            update_checker,
+            update_downloader: None,
+            banner_dismissed: false,
+            dismissed_version: None,
             log_channel_filter: None,
         }
     }
@@ -96,6 +120,67 @@ impl eframe::App for ClawApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Drain log events each frame
         self.log_buffer.drain_receiver(&mut self.log_receiver);
+
+        // Handle manual update check requests from the About view
+        if self.about_view_state.check_requested {
+            self.about_view_state.check_requested = false;
+            self.about_view_state.update_status =
+                views::about::UpdateCheckStatus::Checking;
+            self.update_checker.trigger_check();
+        }
+
+        // Drain update check results
+        if let Some(result) = self.update_checker.drain_result() {
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            self.about_view_state.last_check = Some(now);
+            match result {
+                Ok(r) if r.update_available => {
+                    let version = r.latest.to_string();
+                    // Reset banner dismissal if this is a different version
+                    if self.dismissed_version.as_deref() != Some(&version) {
+                        self.banner_dismissed = false;
+                        self.dismissed_version = None;
+                    }
+                    self.about_view_state.update_status =
+                        views::about::UpdateCheckStatus::Available(version);
+                }
+                Ok(_) => {
+                    self.about_view_state.update_status =
+                        views::about::UpdateCheckStatus::UpToDate;
+                }
+                Err(msg) => {
+                    self.about_view_state.update_status =
+                        views::about::UpdateCheckStatus::Error(msg);
+                }
+            }
+        }
+
+        // Handle download requests from the About view
+        if self.about_view_state.download_requested {
+            self.about_view_state.download_requested = false;
+
+            if let views::about::UpdateCheckStatus::Available(ref version) =
+                self.about_view_state.update_status
+            {
+                let downloader = self
+                    .update_downloader
+                    .get_or_insert_with(|| update_checker::UpdateDownloader::new(ctx.clone()));
+                downloader.start_download(version.clone());
+                self.about_view_state.download_progress =
+                    Some(update_checker::DownloadProgress {
+                        bytes_downloaded: 0,
+                        total_bytes: None,
+                        status: update_checker::DownloadStatus::Downloading,
+                    });
+            }
+        }
+
+        // Drain download progress updates
+        if let Some(ref mut downloader) = self.update_downloader {
+            if let Some(progress) = downloader.drain_progress() {
+                self.about_view_state.download_progress = Some(progress);
+            }
+        }
 
         // Sidebar navigation
         egui::SidePanel::left("nav_panel")
@@ -182,9 +267,62 @@ impl eframe::App for ClawApp {
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("v0.1.0").small().weak());
+                    ui.label(egui::RichText::new(
+                        format!("v{}", env!("CARGO_PKG_VERSION"))
+                    ).small().weak());
+                    ui.add_space(4.0);
+
+                    // -- About section --
+                    if ui
+                        .selectable_label(self.current_view == View::About, "  About")
+                        .clicked()
+                    {
+                        self.current_view = View::About;
+                    }
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("ABOUT").color(theme::OVERLAY).small());
+                    ui.add_space(8.0);
+                    ui.separator();
                 });
             });
+
+        // Update notification banner
+        if let views::about::UpdateCheckStatus::Available(ref version) =
+            self.about_view_state.update_status
+        {
+            if !self.banner_dismissed {
+                let version = version.clone();
+                egui::TopBottomPanel::top("update_banner")
+                    .frame(egui::Frame::NONE.fill(theme::BLUE).inner_margin(egui::Margin::symmetric(12, 6)))
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "A new version (v{version}) is available!"
+                                ))
+                                .color(theme::BASE)
+                                .strong(),
+                            );
+                            ui.add_space(8.0);
+                            if ui
+                                .button(egui::RichText::new("Update Now").color(theme::BASE).strong())
+                                .clicked()
+                            {
+                                self.current_view = View::About;
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button(egui::RichText::new("\u{2715}").color(theme::BASE)).clicked() {
+                                        self.banner_dismissed = true;
+                                        self.dismissed_version = Some(version.clone());
+                                    }
+                                },
+                            );
+                        });
+                    });
+            }
+        }
 
         // Main content area
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -200,6 +338,11 @@ impl eframe::App for ClawApp {
                         &self.log_buffer,
                         &mut self.log_channel_filter,
                     );
+                }
+
+                // -- About view (standalone, no config dependency) --
+                View::About => {
+                    views::about::show(ui, &mut self.about_view_state);
                 }
 
                 // -- Config views (use ConfigManager) --
