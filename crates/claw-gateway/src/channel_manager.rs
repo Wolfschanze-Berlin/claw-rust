@@ -246,10 +246,12 @@ impl ChannelManager {
 
         let ctx = ChannelGatewayContext {
             account_id: account_id.to_owned(),
+            channel_id: channel_id.to_owned(),
             account_config,
             channel_config: ChannelConfig::default(),
             runtime: self.runtime.clone(),
             cancel: account_cancel.clone(),
+            dispatch_tx: None,
         };
 
         // Spawn the account task with auto-restart logic

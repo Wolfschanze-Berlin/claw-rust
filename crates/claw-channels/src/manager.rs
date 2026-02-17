@@ -141,6 +141,8 @@ pub struct ChannelManager {
     cancel: CancellationToken,
     /// Backoff policy for auto-restarts.
     backoff: BackoffPolicy,
+    /// Optional dispatch sender for forwarding inbound messages to the agent pipeline.
+    dispatch_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::types::InboundMessage>>,
 }
 
 impl std::fmt::Debug for ChannelManager {
@@ -160,12 +162,22 @@ impl ChannelManager {
             registry,
             cancel,
             backoff: BackoffPolicy::default(),
+            dispatch_tx: None,
         }
     }
 
     /// Create a channel manager with a custom backoff policy.
     pub fn with_backoff(mut self, backoff: BackoffPolicy) -> Self {
         self.backoff = backoff;
+        self
+    }
+
+    /// Set the dispatch channel for forwarding inbound messages to the agent pipeline.
+    pub fn with_dispatch(
+        mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::types::InboundMessage>,
+    ) -> Self {
+        self.dispatch_tx = Some(tx);
         self
     }
 
@@ -377,10 +389,12 @@ impl ChannelManager {
 
             let ctx = ChannelGatewayContext {
                 account_id: account_id.to_string(),
+                channel_id: channel_id.to_string(),
                 account_config: acct_config,
                 channel_config: channel_config.clone(),
                 runtime: runtime.clone(),
                 cancel: account_cancel.clone(),
+                dispatch_tx: self.dispatch_tx.clone(),
             };
 
             // Mark as running

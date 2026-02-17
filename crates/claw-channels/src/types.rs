@@ -4,10 +4,13 @@
 //! and delivery result types used by the channel plugin system.
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use claw_config::ChannelConfig;
 use claw_core::RuntimeEnv;
+
+use crate::msg_context::MsgContext;
 
 // ---------------------------------------------------------------------------
 // ChatType
@@ -192,17 +195,40 @@ pub struct OutboundDeliveryResult {
 }
 
 // ---------------------------------------------------------------------------
+// InboundMessage
+// ---------------------------------------------------------------------------
+
+/// An inbound message ready for dispatch, carrying reply-routing metadata.
+///
+/// Sent through the `dispatch_tx` channel from gateway adapters to the
+/// central dispatch loop. The `channel_id` and `account_id` let the
+/// dispatcher look up the correct outbound adapter for sending replies.
+#[derive(Debug, Clone)]
+pub struct InboundMessage {
+    /// The normalized message context.
+    pub msg: MsgContext,
+    /// Channel plugin ID (e.g. "telegram").
+    pub channel_id: String,
+    /// Account ID within the channel.
+    pub account_id: String,
+}
+
+// ---------------------------------------------------------------------------
 // ChannelGatewayContext
 // ---------------------------------------------------------------------------
 
 /// Context provided to a channel's gateway adapter when starting polling.
 ///
 /// Carries the runtime environment, account identity, configuration snapshot,
-/// and a cancellation token for cooperative shutdown.
+/// a cancellation token for cooperative shutdown, and an optional dispatch
+/// channel for forwarding inbound messages to the agent pipeline.
 #[derive(Clone)]
 pub struct ChannelGatewayContext {
     /// The account ID being started (channels may have multiple accounts).
     pub account_id: String,
+
+    /// Channel plugin ID (e.g. "telegram").
+    pub channel_id: String,
 
     /// Per-account configuration snapshot.
     pub account_config: serde_json::Value,
@@ -215,12 +241,18 @@ pub struct ChannelGatewayContext {
 
     /// Cancellation token — cancel to signal this account should stop polling.
     pub cancel: CancellationToken,
+
+    /// Optional dispatch channel for forwarding inbound messages to the
+    /// agent pipeline. `None` when dispatch is not wired (e.g. in tests).
+    pub dispatch_tx: Option<mpsc::UnboundedSender<InboundMessage>>,
 }
 
 impl std::fmt::Debug for ChannelGatewayContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChannelGatewayContext")
             .field("account_id", &self.account_id)
+            .field("channel_id", &self.channel_id)
+            .field("has_dispatch", &self.dispatch_tx.is_some())
             .finish_non_exhaustive()
     }
 }
