@@ -84,6 +84,7 @@ impl TelegramGateway {
 
         // Long-polling loop — runs until cancelled.
         let mut offset: i32 = 0;
+        let mut poll_count: u64 = 0;
         loop {
             if cancel.is_cancelled() {
                 info!(account_id = %ctx.account_id, "telegram polling cancelled");
@@ -97,6 +98,20 @@ impl TelegramGateway {
                 .await
             {
                 Ok(updates) => {
+                    poll_count += 1;
+                    if poll_count == 1 {
+                        info!(
+                            account_id = %ctx.account_id,
+                            "telegram polling connected — listening for updates"
+                        );
+                    }
+                    if !updates.is_empty() {
+                        info!(
+                            account_id = %ctx.account_id,
+                            count = updates.len(),
+                            "received telegram updates"
+                        );
+                    }
                     for update in &updates {
                         offset = update.id.as_offset();
                         // TODO: normalize update → MsgContext and dispatch
