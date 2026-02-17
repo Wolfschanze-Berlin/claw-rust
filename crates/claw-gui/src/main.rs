@@ -33,6 +33,7 @@ enum View {
     Config,
     ConfigChannels,
     ConfigAgents,
+    ConfigSkills,
     Bindings,
     // -- About section --
     About,
@@ -51,12 +52,15 @@ struct ClawApp {
     config_editor_state: views::config_editor::ConfigEditorState,
     channels_view_state: views::channels::ChannelsViewState,
     agents_view_state: views::agents::AgentsViewState,
+    skills_view_state: views::skills::SkillsViewState,
     commit_state: views::commit_workflow::CommitWorkflowState,
     about_view_state: views::about::AboutViewState,
     /// Background update checker for GitHub releases.
     update_checker: update_checker::UpdateChecker,
     /// Background update downloader (created on first download request).
     update_downloader: Option<update_checker::UpdateDownloader>,
+    /// Tokio runtime handle for spawning async tasks from the sync UI thread.
+    tokio_handle: tokio::runtime::Handle,
     /// Whether the user dismissed the update banner for the current version.
     banner_dismissed: bool,
     /// Which version was dismissed, so the banner reappears for newer versions.
@@ -71,6 +75,7 @@ impl ClawApp {
         state: Arc<RwLock<AppState>>,
         command_sender: CommandSender,
         log_receiver: mpsc::UnboundedReceiver<state::LogEntry>,
+        tokio_handle: tokio::runtime::Handle,
     ) -> Self {
         theme::apply(&cc.egui_ctx);
 
@@ -87,7 +92,7 @@ impl ClawApp {
             }
         };
 
-        let mut update_checker = update_checker::UpdateChecker::new(cc.egui_ctx.clone());
+        let mut update_checker = update_checker::UpdateChecker::new(cc.egui_ctx.clone(), tokio_handle.clone());
 
         // Trigger an automatic update check on launch if the cache has expired
         if update_checker.should_check() {
@@ -105,10 +110,12 @@ impl ClawApp {
             config_editor_state: Default::default(),
             channels_view_state: Default::default(),
             agents_view_state: Default::default(),
+            skills_view_state: Default::default(),
             commit_state: Default::default(),
             about_view_state: Default::default(),
             update_checker,
             update_downloader: None,
+            tokio_handle,
             banner_dismissed: false,
             dismissed_version: None,
             log_channel_filter: None,
@@ -162,9 +169,10 @@ impl eframe::App for ClawApp {
             if let views::about::UpdateCheckStatus::Available(ref version) =
                 self.about_view_state.update_status
             {
+                let handle = self.tokio_handle.clone();
                 let downloader = self
                     .update_downloader
-                    .get_or_insert_with(|| update_checker::UpdateDownloader::new(ctx.clone()));
+                    .get_or_insert_with(|| update_checker::UpdateDownloader::new(ctx.clone(), handle));
                 downloader.start_download(version.clone());
                 self.about_view_state.download_progress =
                     Some(update_checker::DownloadProgress {
@@ -239,6 +247,10 @@ impl eframe::App for ClawApp {
                 ui.add_space(2.0);
                 if config_nav(ui, self.current_view == View::ConfigAgents, "  Agents") {
                     self.current_view = View::ConfigAgents;
+                }
+                ui.add_space(2.0);
+                if config_nav(ui, self.current_view == View::ConfigSkills, "  Skills") {
+                    self.current_view = View::ConfigSkills;
                 }
                 ui.add_space(2.0);
                 if config_nav(ui, self.current_view == View::Bindings, "  Bindings") {
@@ -349,6 +361,7 @@ impl eframe::App for ClawApp {
                 View::Config
                 | View::ConfigChannels
                 | View::ConfigAgents
+                | View::ConfigSkills
                 | View::Bindings => {
                     self.show_config_view(ui);
                 }
@@ -406,6 +419,9 @@ impl ClawApp {
             View::ConfigAgents => {
                 views::agents::show(ui, mgr, &mut self.agents_view_state);
             }
+            View::ConfigSkills => {
+                views::skills::show(ui, mgr, &mut self.skills_view_state);
+            }
             View::Bindings => {
                 views::bindings::show(ui, mgr);
             }
@@ -419,12 +435,34 @@ fn main() -> eframe::Result<()> {
     let (log_tx, log_rx) = mpsc::unbounded_channel();
     let gui_layer = GuiLogLayer::new(log_tx);
 
-    // Initialize tracing with both console and GUI layers
+    // Initialize tracing with filtered console + GUI layers.
+    //
+    // Console: WARN by default (quiet) — override with RUST_LOG env var.
+    // GUI panel: INFO for claw_* crates, WARN for noisy dependencies.
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Layer};
+
+    let console_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("warn,claw_gui=info,claw_config=info")
+    });
+
+    let gui_filter = EnvFilter::new(
+        "info,\
+         hyper=warn,\
+         reqwest=warn,\
+         tokio=warn,\
+         tungstenite=warn,\
+         egui=warn,\
+         eframe=warn,\
+         winit=warn,\
+         wgpu=warn,\
+         naga=warn",
+    );
+
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .with(gui_layer)
+        .with(tracing_subscriber::fmt::layer().with_filter(console_filter))
+        .with(gui_layer.with_filter(gui_filter))
         .init();
 
     // Shared application state
@@ -445,6 +483,7 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             // Spawn tokio runtime for async command handler
             let rt = tokio::runtime::Runtime::new().unwrap();
+            let handle = rt.handle().clone();
             let cmd_sender = rt.block_on(async {
                 commands::spawn_command_handler(state_clone.clone(), cc.egui_ctx.clone())
             });
@@ -452,7 +491,7 @@ fn main() -> eframe::Result<()> {
             // Keep runtime alive by leaking it (it runs background tasks)
             std::mem::forget(rt);
 
-            Ok(Box::new(ClawApp::new(cc, state_clone, cmd_sender, log_rx)))
+            Ok(Box::new(ClawApp::new(cc, state_clone, cmd_sender, log_rx, handle)))
         }),
     )
 }

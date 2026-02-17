@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
@@ -47,17 +48,24 @@ pub struct UpdateChecker {
     result_rx: mpsc::UnboundedReceiver<Result<UpdateCheckResult, String>>,
     /// egui context for requesting repaints after a result arrives.
     repaint: eframe::egui::Context,
+    /// Tokio runtime handle for spawning async tasks from the sync UI thread.
+    handle: Handle,
 }
 
 impl UpdateChecker {
     /// Create a new checker bound to the given egui repaint context.
-    pub fn new(repaint: eframe::egui::Context) -> Self {
+    ///
+    /// The `handle` must be a valid tokio runtime handle — the checker uses it
+    /// to spawn background HTTP tasks without requiring a runtime on the
+    /// current thread.
+    pub fn new(repaint: eframe::egui::Context, handle: Handle) -> Self {
         let (result_tx, result_rx) = mpsc::unbounded_channel();
         Self {
             last_check_time: None,
             result_tx,
             result_rx,
             repaint,
+            handle,
         }
     }
 
@@ -77,7 +85,7 @@ impl UpdateChecker {
     pub fn trigger_check(&mut self) {
         let tx = self.result_tx.clone();
         let ctx = self.repaint.clone();
-        tokio::spawn(async move {
+        self.handle.spawn(async move {
             let result = check_for_update().await;
             let _ = tx.send(result);
             ctx.request_repaint();
@@ -138,16 +146,22 @@ pub struct UpdateDownloader {
     progress_rx: mpsc::UnboundedReceiver<DownloadProgress>,
     /// egui context for requesting repaints after progress updates.
     repaint: eframe::egui::Context,
+    /// Tokio runtime handle for spawning async download tasks.
+    handle: Handle,
 }
 
 impl UpdateDownloader {
     /// Create a new downloader bound to the given repaint context.
-    pub fn new(repaint: eframe::egui::Context) -> Self {
+    ///
+    /// The `handle` must be a valid tokio runtime handle for spawning
+    /// background download tasks.
+    pub fn new(repaint: eframe::egui::Context, handle: Handle) -> Self {
         let (progress_tx, progress_rx) = mpsc::unbounded_channel();
         Self {
             progress_tx,
             progress_rx,
             repaint,
+            handle,
         }
     }
 
@@ -159,7 +173,7 @@ impl UpdateDownloader {
     pub fn start_download(&self, version: String) {
         let tx = self.progress_tx.clone();
         let ctx = self.repaint.clone();
-        tokio::spawn(async move {
+        self.handle.spawn(async move {
             let result = download_and_install(version, tx.clone(), ctx.clone()).await;
             if let Err(msg) = result {
                 error!(%msg, "update download failed");
