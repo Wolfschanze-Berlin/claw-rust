@@ -54,6 +54,16 @@ impl ChannelGatewayAdapter for TelegramGateway {
 }
 
 impl TelegramGateway {
+    /// Build a `Bot` with a reqwest client whose timeout exceeds the poll duration.
+    fn build_bot(bot_token: &str, poll_timeout_secs: u32) -> teloxide::Bot {
+        let client_timeout = std::time::Duration::from_secs(u64::from(poll_timeout_secs) + 10);
+        let client = reqwest::Client::builder()
+            .timeout(client_timeout)
+            .build()
+            .expect("failed to build reqwest client");
+        teloxide::Bot::with_client(bot_token, client)
+    }
+
     async fn start_polling(
         &self,
         ctx: &ChannelGatewayContext,
@@ -63,7 +73,7 @@ impl TelegramGateway {
         use teloxide::payloads::GetUpdatesSetters;
         use teloxide::requests::Requester;
 
-        let bot = teloxide::Bot::new(bot_token);
+        let bot = Self::build_bot(bot_token, timeout_secs);
         let cancel = ctx.cancel.clone();
 
         info!(
@@ -74,6 +84,7 @@ impl TelegramGateway {
 
         // Long-polling loop — runs until cancelled.
         let mut offset: i32 = 0;
+        let mut poll_count: u64 = 0;
         loop {
             if cancel.is_cancelled() {
                 info!(account_id = %ctx.account_id, "telegram polling cancelled");
@@ -87,6 +98,20 @@ impl TelegramGateway {
                 .await
             {
                 Ok(updates) => {
+                    poll_count += 1;
+                    if poll_count == 1 {
+                        info!(
+                            account_id = %ctx.account_id,
+                            "telegram polling connected — listening for updates"
+                        );
+                    }
+                    if !updates.is_empty() {
+                        info!(
+                            account_id = %ctx.account_id,
+                            count = updates.len(),
+                            "received telegram updates"
+                        );
+                    }
                     for update in &updates {
                         offset = update.id.as_offset();
                         // TODO: normalize update → MsgContext and dispatch
@@ -111,7 +136,7 @@ impl TelegramGateway {
     ) -> Result<(), ChannelError> {
         use teloxide::requests::Requester;
 
-        let bot = teloxide::Bot::new(bot_token);
+        let bot = Self::build_bot(bot_token, 30);
 
         // Register webhook URL with Telegram.
         bot.set_webhook(
