@@ -1,0 +1,19 @@
+[package]
+name = "claw-discord"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+claw-core.workspace = true
+claw-config.workspace = true
+claw-channels.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true

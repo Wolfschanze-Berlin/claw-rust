@@ -1,0 +1,17 @@
+[package]
+name = "claw-telegram"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+claw-core.workspace = true
+claw-config.workspace = true
+claw-channels.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+teloxide = { workspace = true }

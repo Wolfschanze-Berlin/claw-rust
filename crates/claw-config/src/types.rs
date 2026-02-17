@@ -685,6 +685,137 @@ pub struct ModelEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Platform-specific channel account configs
+// ---------------------------------------------------------------------------
+
+/// Telegram-specific account configuration.
+///
+/// Telegram bots authenticate with a single token from BotFather.
+/// The gateway supports either webhook (HTTP POST) or long-polling mode.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TelegramAccountConfig {
+    /// Bot token issued by BotFather.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot_token: Option<String>,
+
+    /// Webhook URL for webhook mode. When `None`, long polling is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
+
+    /// Webhook secret token for validating incoming requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_secret: Option<String>,
+
+    /// Types of updates to receive (e.g. "message", "callback_query").
+    /// If `None`, all update types are received.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_updates: Option<Vec<String>>,
+
+    /// Long-poll timeout in seconds (default: 30).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poll_timeout_secs: Option<u32>,
+
+    /// Catch-all for extension fields.
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// WhatsApp-specific account configuration.
+///
+/// WhatsApp uses session-based auth (QR code scan or pairing code).
+/// Sessions persist via a local store (SQLite) and can be invalidated
+/// remotely by the mobile app at any time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WhatsAppAccountConfig {
+    /// Path to the SQLite session store.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store_path: Option<String>,
+
+    /// Phone number for pairing-code login (alternative to QR scan).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phone_number: Option<String>,
+
+    /// Whether to use pairing code mode instead of QR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_pairing_code: Option<bool>,
+
+    /// Heartbeat interval in seconds for connection health checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heartbeat_interval_secs: Option<u32>,
+
+    /// Maximum reconnection attempts before giving up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_reconnect_attempts: Option<u32>,
+
+    /// Catch-all for extension fields.
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Discord-specific account configuration.
+///
+/// Discord bots authenticate via a bot token from the developer portal.
+/// The gateway uses WebSocket shards; slash commands require an application ID.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DiscordAccountConfig {
+    /// Bot token from the Discord developer portal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot_token: Option<String>,
+
+    /// Application ID (required for slash command registration).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
+
+    /// Gateway intents bitmask. If `None`, defaults to non-privileged intents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intents: Option<u64>,
+
+    /// Number of shards. If `None`, Discord auto-selects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shard_count: Option<u32>,
+
+    /// Whether to sync slash commands on startup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_commands: Option<bool>,
+
+    /// Catch-all for extension fields.
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+// --- Conversion from generic ChannelAccountConfig ---
+
+impl TryFrom<&ChannelAccountConfig> for TelegramAccountConfig {
+    type Error = serde_json::Error;
+
+    fn try_from(generic: &ChannelAccountConfig) -> Result<Self, Self::Error> {
+        let value = serde_json::to_value(generic)?;
+        serde_json::from_value(value)
+    }
+}
+
+impl TryFrom<&ChannelAccountConfig> for WhatsAppAccountConfig {
+    type Error = serde_json::Error;
+
+    fn try_from(generic: &ChannelAccountConfig) -> Result<Self, Self::Error> {
+        let value = serde_json::to_value(generic)?;
+        serde_json::from_value(value)
+    }
+}
+
+impl TryFrom<&ChannelAccountConfig> for DiscordAccountConfig {
+    type Error = serde_json::Error;
+
+    fn try_from(generic: &ChannelAccountConfig) -> Result<Self, Self::Error> {
+        let value = serde_json::to_value(generic)?;
+        serde_json::from_value(value)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
@@ -832,5 +963,98 @@ mod tests {
         let config: OpenClawConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.extra.get("customField").unwrap(), &serde_json::json!(42));
         assert_eq!(config.extra.get("anotherOne").unwrap(), &serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn telegram_account_config_parses() {
+        let json = r#"{
+            "botToken": "123:ABC",
+            "webhookUrl": "https://example.com/hook",
+            "webhookSecret": "sec123",
+            "allowedUpdates": ["message", "callback_query"],
+            "pollTimeoutSecs": 60
+        }"#;
+        let cfg: TelegramAccountConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.bot_token.as_deref(), Some("123:ABC"));
+        assert_eq!(cfg.webhook_url.as_deref(), Some("https://example.com/hook"));
+        assert_eq!(cfg.webhook_secret.as_deref(), Some("sec123"));
+        assert_eq!(cfg.allowed_updates.as_ref().unwrap().len(), 2);
+        assert_eq!(cfg.poll_timeout_secs, Some(60));
+    }
+
+    #[test]
+    fn telegram_account_from_generic() {
+        let json = r#"{"botToken": "123:ABC", "webhookUrl": "https://example.com"}"#;
+        let generic: ChannelAccountConfig = serde_json::from_str(json).unwrap();
+        let tg = TelegramAccountConfig::try_from(&generic).unwrap();
+        assert_eq!(tg.bot_token.as_deref(), Some("123:ABC"));
+        assert_eq!(tg.webhook_url.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn whatsapp_account_config_parses() {
+        let json = r#"{
+            "storePath": "/data/wa-store.db",
+            "phoneNumber": "+1234567890",
+            "usePairingCode": true,
+            "heartbeatIntervalSecs": 15,
+            "maxReconnectAttempts": 5
+        }"#;
+        let cfg: WhatsAppAccountConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.store_path.as_deref(), Some("/data/wa-store.db"));
+        assert_eq!(cfg.phone_number.as_deref(), Some("+1234567890"));
+        assert_eq!(cfg.use_pairing_code, Some(true));
+        assert_eq!(cfg.heartbeat_interval_secs, Some(15));
+        assert_eq!(cfg.max_reconnect_attempts, Some(5));
+    }
+
+    #[test]
+    fn whatsapp_account_from_generic() {
+        let json = r#"{"storePath": "/data/wa.db"}"#;
+        let generic: ChannelAccountConfig = serde_json::from_str(json).unwrap();
+        let wa = WhatsAppAccountConfig::try_from(&generic).unwrap();
+        assert_eq!(wa.store_path.as_deref(), Some("/data/wa.db"));
+        assert!(wa.phone_number.is_none());
+    }
+
+    #[test]
+    fn discord_account_config_parses() {
+        let json = r#"{
+            "botToken": "discord-tok",
+            "applicationId": "1234567890",
+            "intents": 3276799,
+            "shardCount": 2,
+            "syncCommands": true
+        }"#;
+        let cfg: DiscordAccountConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.bot_token.as_deref(), Some("discord-tok"));
+        assert_eq!(cfg.application_id.as_deref(), Some("1234567890"));
+        assert_eq!(cfg.intents, Some(3276799));
+        assert_eq!(cfg.shard_count, Some(2));
+        assert_eq!(cfg.sync_commands, Some(true));
+    }
+
+    #[test]
+    fn discord_account_from_generic() {
+        let json = r#"{"botToken": "disc-tok", "applicationId": "app123"}"#;
+        let generic: ChannelAccountConfig = serde_json::from_str(json).unwrap();
+        let dc = DiscordAccountConfig::try_from(&generic).unwrap();
+        assert_eq!(dc.bot_token.as_deref(), Some("disc-tok"));
+        assert_eq!(dc.application_id.as_deref(), Some("app123"));
+    }
+
+    #[test]
+    fn platform_config_defaults_are_empty() {
+        let tg = TelegramAccountConfig::default();
+        let json = serde_json::to_value(&tg).unwrap();
+        assert_eq!(json, serde_json::json!({}));
+
+        let wa = WhatsAppAccountConfig::default();
+        let json = serde_json::to_value(&wa).unwrap();
+        assert_eq!(json, serde_json::json!({}));
+
+        let dc = DiscordAccountConfig::default();
+        let json = serde_json::to_value(&dc).unwrap();
+        assert_eq!(json, serde_json::json!({}));
     }
 }

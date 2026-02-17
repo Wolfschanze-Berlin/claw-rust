@@ -10,6 +10,9 @@ members = [
     "crates/claw-db",
     "crates/claw-app",
     "crates/claw-gui",
+    "crates/claw-telegram",
+    "crates/claw-whatsapp",
+    "crates/claw-discord",
 ]
 resolver = "3"
 
@@ -78,3 +81,6 @@ claw-channels = { path = "crates/claw-channels" }
 claw-plugins = { path = "crates/claw-plugins" }
 claw-dispatch = { path = "crates/claw-dispatch" }
 claw-db = { path = "crates/claw-db" }
+claw-telegram = { path = "crates/claw-telegram" }
+claw-whatsapp = { path = "crates/claw-whatsapp" }
+claw-discord = { path = "crates/claw-discord" }

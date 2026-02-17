@@ -55,9 +55,15 @@ async fn main() -> Result<()> {
         "gateway server listening"
     );
 
-    // 6. Set up channel manager.
+    // 6. Set up channel manager with registered plugins.
     let cancel = CancellationToken::new();
     let registry = ChannelRegistry::new();
+    register_channel_plugins(&registry);
+    info!(
+        channels = registry.len(),
+        "channel plugins registered: {:?}",
+        registry.list_ids()
+    );
     let channel_mgr = ChannelManager::new(
         registry,
         BackoffPolicy::default(),
@@ -90,6 +96,30 @@ fn config_path_from_args() -> PathBuf {
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("config/config.json"))
+}
+
+/// Register channel plugins that are compiled in via feature flags.
+fn register_channel_plugins(registry: &ChannelRegistry) {
+    #[cfg(feature = "telegram")]
+    {
+        let plugin = std::sync::Arc::new(claw_telegram::TelegramPlugin::new());
+        registry.register_plugin(plugin);
+        info!("registered telegram channel plugin");
+    }
+
+    #[cfg(feature = "whatsapp")]
+    {
+        let plugin = std::sync::Arc::new(claw_whatsapp::WhatsAppPlugin::new());
+        registry.register_plugin(plugin);
+        info!("registered whatsapp channel plugin");
+    }
+
+    #[cfg(feature = "discord")]
+    {
+        let plugin = std::sync::Arc::new(claw_discord::DiscordPlugin::new());
+        registry.register_plugin(plugin);
+        info!("registered discord channel plugin");
+    }
 }
 
 /// Map [`OpenClawConfig`] gateway settings to [`GatewayServerOptions`].
