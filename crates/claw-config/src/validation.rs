@@ -96,6 +96,8 @@ pub fn validate_config(config: &OpenClawConfig) -> ValidationResult {
     validate_agents(config, &mut result);
     validate_bindings(config, &mut result);
     validate_models(config, &mut result);
+    validate_session(config, &mut result);
+    validate_tools(config, &mut result);
     validate_extra_keys(config, &mut result);
 
     result
@@ -165,7 +167,30 @@ fn validate_gateway(config: &OpenClawConfig, result: &mut ValidationResult) {
                     _ => {}
                 }
             }
+
+            // Auth mode "password" requires a non-empty password
+            if mode == "password" {
+                let has_password = auth
+                    .password
+                    .as_ref()
+                    .is_some_and(|p| !p.is_empty())
+                    || auth.token.as_ref().is_some_and(|t| !t.is_empty());
+                if !has_password {
+                    result.error(
+                        "gateway.auth.password",
+                        "auth mode 'password' requires a non-empty password (or token as fallback)",
+                    );
+                }
+            }
         }
+    }
+
+    // Migration hint: controlUiEnabled → controlUi.enabled
+    if gw.control_ui_enabled.is_some() && gw.control_ui.is_some() {
+        result.warning(
+            "gateway.controlUiEnabled",
+            "both 'controlUiEnabled' and 'controlUi' are set; prefer 'controlUi.enabled'",
+        );
     }
 }
 
@@ -256,6 +281,45 @@ fn validate_models(config: &OpenClawConfig, result: &mut ValidationResult) {
             if entry.id.as_ref().is_none_or(|id| id.is_empty()) {
                 result.error(format!("{prefix}.id"), "model entry must have a non-empty id");
             }
+        }
+    }
+}
+
+fn validate_session(config: &OpenClawConfig, result: &mut ValidationResult) {
+    let Some(session) = &config.session else { return };
+
+    // Validate session scope is a known value
+    if let Some(scope) = &session.scope {
+        const KNOWN_SCOPES: &[&str] = &["per-sender", "per-channel", "per-account", "global"];
+        if !KNOWN_SCOPES.contains(&scope.as_str()) {
+            result.warning(
+                "session.scope",
+                format!(
+                    "unknown session scope '{scope}'; known values: {}",
+                    KNOWN_SCOPES.join(", ")
+                ),
+            );
+        }
+    }
+}
+
+fn validate_tools(config: &OpenClawConfig, result: &mut ValidationResult) {
+    let Some(tools) = &config.tools else { return };
+
+    // Warn if allow and deny lists overlap
+    if let (Some(allow), Some(deny)) = (&tools.allow, &tools.deny) {
+        let allow_set: HashSet<&str> = allow.iter().map(|s| s.as_str()).collect();
+        let deny_set: HashSet<&str> = deny.iter().map(|s| s.as_str()).collect();
+        let overlap: Vec<&&str> = allow_set.intersection(&deny_set).collect();
+        if !overlap.is_empty() {
+            let names: Vec<&str> = overlap.into_iter().copied().collect();
+            result.warning(
+                "tools",
+                format!(
+                    "tools appear in both allow and deny lists: {}",
+                    names.join(", ")
+                ),
+            );
         }
     }
 }
@@ -523,6 +587,69 @@ mod tests {
         let result = validate_config(&config);
         assert!(result.has_errors());
         assert!(result.errors().iter().any(|i| i.path.contains("agentId")));
+    }
+
+    #[test]
+    fn password_auth_requires_password() {
+        let mut config = valid_config();
+        config.gateway.as_mut().unwrap().auth = Some(GatewayAuthConfig {
+            mode: Some("password".into()),
+            password: None,
+            token: None,
+            ..Default::default()
+        });
+        let result = validate_config(&config);
+        assert!(result.has_errors());
+        assert!(result.errors().iter().any(|i| i.path == "gateway.auth.password"));
+    }
+
+    #[test]
+    fn password_auth_accepts_token_fallback() {
+        let mut config = valid_config();
+        config.gateway.as_mut().unwrap().auth = Some(GatewayAuthConfig {
+            mode: Some("password".into()),
+            password: None,
+            token: Some("fallback-pw".into()),
+            ..Default::default()
+        });
+        let result = validate_config(&config);
+        assert!(!result.errors().iter().any(|i| i.path == "gateway.auth.password"));
+    }
+
+    #[test]
+    fn control_ui_migration_warning() {
+        let mut config = valid_config();
+        let gw = config.gateway.as_mut().unwrap();
+        gw.control_ui_enabled = Some(true);
+        gw.control_ui = Some(ControlUiConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+        let result = validate_config(&config);
+        assert!(result.warnings().iter().any(|i| i.path.contains("controlUiEnabled")));
+    }
+
+    #[test]
+    fn unknown_session_scope_warned() {
+        let mut config = valid_config();
+        config.session = Some(SessionConfig {
+            scope: Some("unknown-scope".into()),
+            ..Default::default()
+        });
+        let result = validate_config(&config);
+        assert!(result.warnings().iter().any(|i| i.path == "session.scope"));
+    }
+
+    #[test]
+    fn tools_allow_deny_overlap_warned() {
+        let mut config = valid_config();
+        config.tools = Some(ToolsConfig {
+            allow: Some(vec!["bash".into(), "web_search".into()]),
+            deny: Some(vec!["bash".into()]),
+            ..Default::default()
+        });
+        let result = validate_config(&config);
+        assert!(result.warnings().iter().any(|i| i.path == "tools" && i.message.contains("bash")));
     }
 
     #[test]
