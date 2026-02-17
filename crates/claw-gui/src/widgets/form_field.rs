@@ -214,6 +214,50 @@ pub fn number_field_u32(ui: &mut egui::Ui, label: &str, value: &mut Option<u32>)
     changed
 }
 
+/// Render a labeled number input for `Option<u64>`.
+///
+/// Uses a [`egui::DragValue`] clamped to `0..=u64::MAX`.
+/// Useful for millisecond durations (e.g. rate limit windows).
+pub fn number_field_u64(ui: &mut egui::Ui, label: &str, value: &mut Option<u64>) -> bool {
+    let mut changed = false;
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).color(theme::SUBTEXT));
+
+        match value {
+            Some(n) => {
+                let mut val = *n as f64;
+                let response = ui.add(
+                    egui::DragValue::new(&mut val)
+                        .range(0.0..=u64::MAX as f64)
+                        .speed(100.0),
+                );
+                if response.changed() {
+                    *n = val as u64;
+                    changed = true;
+                }
+                if ui
+                    .add(egui::Button::new(egui::RichText::new("\u{00d7}").color(theme::RED)).small())
+                    .on_hover_text("Clear")
+                    .clicked()
+                {
+                    *value = None;
+                    changed = true;
+                }
+            }
+            None => {
+                ui.label(egui::RichText::new("Not set").color(theme::OVERLAY).italics());
+                if ui.small_button("Set").clicked() {
+                    *value = Some(0);
+                    changed = true;
+                }
+            }
+        }
+    });
+
+    changed
+}
+
 /// Render a labeled dropdown/select for `Option<String>` from fixed options.
 ///
 /// Includes a "None (default)" entry at the top of the list to reset

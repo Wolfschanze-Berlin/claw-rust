@@ -7,8 +7,10 @@ use eframe::egui;
 use std::collections::HashMap;
 
 use claw_config::{
-    AgentDefaults, BindMode, CommandsConfig, GatewayAuthConfig, GatewayConfig, ModelsConfig,
-    OpenClawConfig, SessionConfig, SubagentDefaults, ToggleConfig, ValidationResult,
+    AgentDefaults, BindMode, CommandsConfig, ControlUiConfig, GatewayAuthConfig, GatewayConfig,
+    GatewayToolsConfig, ModelsConfig, OpenClawConfig, RateLimitConfig, RemoteConfig,
+    SessionConfig, SubagentDefaults, TailscaleConfig, ToggleConfig, TrustedProxyConfig,
+    ValidationResult,
 };
 
 use crate::theme;
@@ -41,6 +43,8 @@ pub struct ConfigEditorState {
     pub gateway_extra_json: String,
     pub gateway_extra_editing: bool,
     pub auth_token_visible: bool,
+    pub auth_password_visible: bool,
+    pub remote_token_visible: bool,
     // Agent defaults
     pub agent_defaults_extra_json: String,
     pub agent_defaults_extra_editing: bool,
@@ -61,6 +65,8 @@ impl Default for ConfigEditorState {
             gateway_extra_json: String::new(),
             gateway_extra_editing: false,
             auth_token_visible: false,
+            auth_password_visible: false,
+            remote_token_visible: false,
             agent_defaults_extra_json: String::new(),
             agent_defaults_extra_editing: false,
             raw_config_json: String::new(),
@@ -175,13 +181,12 @@ fn show_gateway(
     ui.heading("Gateway");
     ui.add_space(4.0);
 
-    // Port
+    // -- Core settings --------------------------------------------------
     ui.horizontal(|ui| {
         changed |= form_field::number_field_u16(ui, "Port", &mut gw.port, 3000);
         validation_badge::validation_badge(ui, "gateway.port", validation);
     });
 
-    // Bind mode — convert between BindMode and Option<String> for select_field
     let mut bind_str = gw.bind.as_ref().map(|b| bind_mode_to_str(b).to_string());
     if form_field::select_field(
         ui,
@@ -193,15 +198,36 @@ fn show_gateway(
         changed = true;
     }
 
-    // Mode
     changed |= form_field::text_field(ui, "Mode", &mut gw.mode);
-
-    // Control UI
-    changed |= form_field::bool_field(ui, "Control UI enabled", &mut gw.control_ui_enabled);
 
     ui.add_space(8.0);
 
-    // Auth section (collapsible)
+    // -- Control UI section ---------------------------------------------
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Control UI").color(theme::TEXT).strong(),
+    )
+    .id_salt("gateway_control_ui")
+    .default_open(false)
+    .show(ui, |ui| {
+        // Legacy flat boolean
+        changed |= form_field::bool_field(ui, "Enabled (legacy)", &mut gw.control_ui_enabled);
+
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Nested control_ui config (overrides legacy field):")
+                .color(theme::OVERLAY)
+                .small()
+                .italics(),
+        );
+
+        let cui = gw.control_ui.get_or_insert_with(ControlUiConfig::default);
+        changed |= form_field::bool_field(ui, "Enabled", &mut cui.enabled);
+        changed |= form_field::text_field(ui, "Base path", &mut cui.base_path);
+    });
+
+    ui.add_space(4.0);
+
+    // -- Authentication section -----------------------------------------
     egui::CollapsingHeader::new(
         egui::RichText::new("Authentication").color(theme::TEXT).strong(),
     )
@@ -210,9 +236,14 @@ fn show_gateway(
     .show(ui, |ui| {
         let auth = gw.auth.get_or_insert_with(GatewayAuthConfig::default);
 
-        changed |= form_field::select_field(ui, "Auth mode", &mut auth.mode, &["none", "token"]);
+        changed |= form_field::select_field(
+            ui,
+            "Auth mode",
+            &mut auth.mode,
+            &["none", "token", "password"],
+        );
 
-        // Only show token field when mode is "token"
+        // Token field — shown when mode is "token"
         if auth.mode.as_deref() == Some("token") {
             ui.horizontal(|ui| {
                 changed |= form_field::secret_field(
@@ -224,11 +255,129 @@ fn show_gateway(
                 validation_badge::validation_badge(ui, "gateway.auth.token", validation);
             });
         }
+
+        // Password field — shown when mode is "password"
+        if auth.mode.as_deref() == Some("password") {
+            changed |= form_field::secret_field(
+                ui,
+                "Password",
+                &mut auth.password,
+                &mut state.auth_password_visible,
+            );
+        }
+
+        changed |= form_field::bool_field(ui, "Allow Tailscale", &mut auth.allow_tailscale);
+
+        // Trusted proxy sub-section
+        ui.add_space(4.0);
+        egui::CollapsingHeader::new(
+            egui::RichText::new("Trusted Proxy").color(theme::SUBTEXT),
+        )
+        .id_salt("gateway_auth_trusted_proxy")
+        .default_open(false)
+        .show(ui, |ui| {
+            let tp = auth
+                .trusted_proxy
+                .get_or_insert_with(TrustedProxyConfig::default);
+            changed |= form_field::text_field(ui, "User header", &mut tp.user_header);
+        });
+
+        // Rate limit sub-section
+        ui.add_space(4.0);
+        egui::CollapsingHeader::new(
+            egui::RichText::new("Rate Limit").color(theme::SUBTEXT),
+        )
+        .id_salt("gateway_auth_rate_limit")
+        .default_open(false)
+        .show(ui, |ui| {
+            let rl = auth
+                .rate_limit
+                .get_or_insert_with(RateLimitConfig::default);
+            changed |= form_field::number_field_u32(ui, "Max attempts", &mut rl.max_attempts);
+            changed |= form_field::number_field_u64(ui, "Window (ms)", &mut rl.window_ms);
+            changed |= form_field::number_field_u64(ui, "Lockout (ms)", &mut rl.lockout_ms);
+            changed |= form_field::bool_field(ui, "Exempt loopback", &mut rl.exempt_loopback);
+        });
+    });
+
+    ui.add_space(4.0);
+
+    // -- Tailscale section ----------------------------------------------
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Tailscale").color(theme::TEXT).strong(),
+    )
+    .id_salt("gateway_tailscale")
+    .default_open(false)
+    .show(ui, |ui| {
+        let ts = gw.tailscale.get_or_insert_with(TailscaleConfig::default);
+        changed |= form_field::select_field(
+            ui,
+            "Mode",
+            &mut ts.mode,
+            &["off", "serve", "funnel"],
+        );
+        changed |= form_field::bool_field(ui, "Reset on exit", &mut ts.reset_on_exit);
+    });
+
+    ui.add_space(4.0);
+
+    // -- Remote section -------------------------------------------------
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Remote").color(theme::TEXT).strong(),
+    )
+    .id_salt("gateway_remote")
+    .default_open(false)
+    .show(ui, |ui| {
+        let remote = gw.remote.get_or_insert_with(RemoteConfig::default);
+        changed |= form_field::text_field(ui, "URL", &mut remote.url);
+        changed |= form_field::select_field(
+            ui,
+            "Transport",
+            &mut remote.transport,
+            &["ssh", "direct"],
+        );
+        changed |= form_field::secret_field(
+            ui,
+            "Token",
+            &mut remote.token,
+            &mut state.remote_token_visible,
+        );
+    });
+
+    ui.add_space(4.0);
+
+    // -- Trusted Proxies ------------------------------------------------
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Trusted Proxies").color(theme::TEXT).strong(),
+    )
+    .id_salt("gateway_trusted_proxies")
+    .default_open(false)
+    .show(ui, |ui| {
+        changed |= form_field::string_list_field(
+            ui,
+            "Proxy addresses",
+            &mut gw.trusted_proxies,
+        );
+    });
+
+    ui.add_space(4.0);
+
+    // -- Gateway Tools --------------------------------------------------
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Tools (allow/deny)").color(theme::TEXT).strong(),
+    )
+    .id_salt("gateway_tools")
+    .default_open(false)
+    .show(ui, |ui| {
+        let tools = gw.tools.get_or_insert_with(GatewayToolsConfig::default);
+        changed |= form_field::string_list_field(ui, "Allow", &mut tools.allow);
+        ui.add_space(4.0);
+        changed |= form_field::string_list_field(ui, "Deny", &mut tools.deny);
     });
 
     ui.add_space(8.0);
 
-    // Extra fields as JSON
+    // -- Extra fields as JSON -------------------------------------------
     let mut extra_val = serde_json::to_value(&gw.extra).unwrap_or_default();
     if json_view::json_field(
         ui,
