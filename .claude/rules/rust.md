@@ -5,6 +5,7 @@ Rules for Rust development in this project.
 ## Tooling
 
 - Use the LSP tool for diagnostics instead of running `cargo check` via shell. LSP provides faster, integrated feedback without spawning a separate process.
+- **ALWAYS use `cargo nextest run` instead of `cargo test`**. nextest provides parallel per-test execution, better output, and faster results. It is installed in this workspace.
 
 ## OpenClaw Porting Conventions
 
