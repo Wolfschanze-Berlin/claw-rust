@@ -1,0 +1,16 @@
+# <type>(scope): <subject> (#issue)
+#
+# Types: feat, fix, refactor, test, docs, chore, perf, ci
+# Scope: crate name (core, config, channels, routing, dispatch, gateway, plugins, db, app, gui)
+#
+# Examples:
+#   feat(gui): add settings view (#45)
+#   fix(gateway): handle WS disconnect during RPC (#23)
+#   refactor(core): simplify error code mapping (#31)
+#   test(channels): add Telegram adapter integration tests (#19)
+#
+# Body: explain WHY, not WHAT (the diff shows what changed)
+#
+# Footer:
+#   Co-Authored-By: Name <email>
+#   Related to #N (mention without closing)

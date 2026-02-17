@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: OpenClaw TypeScript Reference
+    url: https://github.com/open-claw/open-claw
+    about: Original TypeScript implementation this project ports from
