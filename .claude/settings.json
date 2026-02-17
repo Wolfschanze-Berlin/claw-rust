@@ -18,9 +18,9 @@
                 "matcher": "*",
                 "hooks": [
                     {
-                        "type": "prompt",
-                        "prompt": "Review the work done in this session. Determine if structural changes were made: (1) New crates/modules added/removed, (2) New directories or major files created/deleted, (3) Public API changed, (4) Architecture or message flow changed, (5) Dependencies added to Cargo.toml, (6) Config schema changed, (7) Build/run instructions changed. If ANY structural change was made AND README.md was NOT updated, you MUST respond with exactly: {\"ok\":false,\"reason\":\"README.md needs updating to reflect structural changes made this session.\"}. If no structural changes or README was already updated, respond with exactly: {\"ok\":true}. Respond ONLY with the JSON object, nothing else.",
-                        "timeout": 30
+                        "type": "command",
+                        "command": "bash .claude/hooks/check-readme.sh",
+                        "timeout": 10
                     }
                 ]
             }
