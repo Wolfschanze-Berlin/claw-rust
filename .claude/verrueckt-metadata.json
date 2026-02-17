@@ -1,0 +1,56 @@
+{
+  "verrueckt_tasks": {
+    "initialized": true,
+    "initializedAt": "2026-02-17T00:00:00Z",
+    "projectProfile": {
+      "name": "claw-rust",
+      "type": "single-app",
+      "languages": ["Rust"],
+      "frameworks": {
+        "frontend": "None (egui planned)",
+        "backend": "actix-web (planned)",
+        "testing": "cargo test"
+      },
+      "architecture": {
+        "pattern": "Workspace with domain crates",
+        "planned_crates": [
+          "claw-config",
+          "claw-core",
+          "claw-gateway",
+          "claw-routing",
+          "claw-channels",
+          "claw-plugins",
+          "claw-dispatch",
+          "claw-db",
+          "claw-app"
+        ]
+      },
+      "conventions": {
+        "naming": "snake_case (Rust standard)",
+        "serde": "PascalCase rename, skip_serializing_if, tagged enums",
+        "async": "async_trait, tokio, CancellationToken",
+        "errors": "thiserror for library, anyhow for app"
+      }
+    },
+    "projectAgents": [
+      "core-dev.md",
+      "gateway-dev.md",
+      "channels-dev.md",
+      "test-writer.md"
+    ],
+    "projectSkills": [
+      "project-patterns"
+    ]
+  },
+  "github": {
+    "repository": "Wolfschanze-Berlin/claw-rust",
+    "project_number": 38,
+    "project_id": "PVT_kwDOCtkjD84BPZCR",
+    "project_url": "https://github.com/orgs/Wolfschanze-Berlin/projects/38",
+    "milestones": {
+      "current_sprint": 1,
+      "next_sprint": 2,
+      "backlog": 3
+    }
+  }
+}
