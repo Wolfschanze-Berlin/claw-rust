@@ -1,0 +1,13 @@
+# ── Linker ────────────────────────────────────────────────────────
+# rust-lld ships with the Rust toolchain — 30-50% faster linking than MSVC default
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
+# ── Build parallelism ────────────────────────────────────────────
+[build]
+jobs = 16                 # match logical CPU count (16 cores)
+rustc-wrapper = "sccache" # Use sccache for compilation caching
+
+# ── Compilation cache ────────────────────────────────────────────
+# sccache caches compiled crates across builds — massive speedup on clean builds
+# Cache env vars set globally in ~/.bashrc
