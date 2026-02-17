@@ -26,17 +26,7 @@ category = "DeveloperTool"
 
 # Output directory for generated installers
 outDir = "target/packages"
-
-# ---------- Binaries ----------
-# Both the headless server and the GUI are bundled into a single installer.
-
-[[binaries]]
-path = "claw"
-main = true
-
-[[binaries]]
-path = "claw-gui"
-main = false
+binariesDir = "target/release"
 
 # ---------- Icons ----------
 # Supports glob patterns. Platform-specific formats are selected automatically.
@@ -46,7 +36,6 @@ icons = [
     "resources/icon.ico",        # Windows
     "resources/icon.icns",       # macOS
     "resources/icon.png",        # Fallback / Linux
-    "resources/icon_*.png",      # Multi-resolution PNGs (e.g. icon_32x32.png)
 ]
 
 # ---------- Target Formats ----------
@@ -58,6 +47,18 @@ formats = ["nsis", "dmg"]
 # Build both binaries in release mode before packaging.
 
 beforePackagingCommand = "cargo build --release"
+
+# ---------- Binaries ----------
+# Both the headless server and the GUI are bundled into a single installer.
+# IMPORTANT: [[binaries]] must come after all top-level keys (TOML scoping rule).
+
+[[binaries]]
+path = "claw"
+main = true
+
+[[binaries]]
+path = "claw-gui"
+main = false
 
 # ---------- Windows — General Settings ----------
 
@@ -86,12 +87,6 @@ installerIcon = "resources/icon.ico"
 appdataPaths = ["$APPDATA/Claw", "$LOCALAPPDATA/Claw"]
 
 # Custom NSIS logic injected before the install section.
-# - Creates a Start Menu shortcut for claw-gui
-# - Offers an optional Desktop shortcut
-# - Optionally adds the install directory to the system PATH for the `claw` CLI
-# - Sets a custom default install directory under "Wolfschanze\Claw"
-#
-# Note: NSIS automatically registers an uninstaller entry in Add/Remove Programs.
 preinstallSection = """
   ; --- Custom install directory ---
   StrCpy $INSTDIR "$PROGRAMFILES\\Wolfschanze\\Claw"
@@ -109,11 +104,9 @@ preinstallSection = """
 
   ; --- Optional PATH registration for claw CLI ---
   MessageBox MB_YESNO "Add Claw CLI to your system PATH?" IDNO skip_path
-    ; Read current PATH, append install dir, write back
     ReadRegStr $0 HKCU "Environment" "Path"
     StrCpy $0 "$0;$INSTDIR"
     WriteRegStr HKCU "Environment" "Path" $0
-    ; Broadcast WM_SETTINGCHANGE so running shells pick up the change
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=500
   skip_path:
 """
@@ -128,25 +121,13 @@ minimumSystemVersion = "11.0"
 entitlements = "resources/macos/Claw.entitlements"
 
 # Code-signing identity — set to "-" for ad-hoc signing during development.
-# For release builds, replace with your Developer ID Application certificate name
-# or set via the APPLE_SIGNING_IDENTITY environment variable in CI.
 signingIdentity = "-"
-
-# Provider short name for notarization (required when Apple ID belongs to
-# multiple teams). Set this to your team's ProviderShortName from
-# `xcrun notarytool store-credentials`.
-# providerShortName = ""
 
 # ---------- macOS — DMG Disk Image ----------
 
 [dmg]
 # DMG window dimensions and icon placement.
-# The Applications symlink is placed automatically by cargo-packager.
 windowSize = { width = 600, height = 400 }
 windowPosition = { x = 200, y = 200 }
 appPosition = { x = 180, y = 190 }
 appFolderPosition = { x = 420, y = 190 }
-
-# Optional background image for the DMG window.
-# Recommended size: 600x400 px to match windowSize.
-# background = "resources/macos/dmg-background.png"
