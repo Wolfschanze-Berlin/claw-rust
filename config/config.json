@@ -87,36 +87,6 @@
                 "subagents": {
                     "allowAgents": []
                 }
-            },
-            {
-                "id": "einstein",
-                "name": "einstein",
-                "workspace": "/home/node/.openclaw/agents/einstein/workspace",
-                "agentDir": "/home/node/.openclaw/agents/einstein/agent",
-                "model": "anthropic/claude-haiku-4-5-20251001",
-                "subagents": {
-                    "allowAgents": []
-                }
-            },
-            {
-                "id": "gauss",
-                "name": "gauss",
-                "workspace": "/home/node/.openclaw/agents/gauss/workspace",
-                "agentDir": "/home/node/.openclaw/agents/gauss/agent",
-                "model": "anthropic/claude-haiku-4-5-20251001",
-                "subagents": {
-                    "allowAgents": []
-                }
-            },
-            {
-                "id": "von_braun",
-                "name": "von_braun",
-                "workspace": "/home/node/.openclaw/agents/von_braun/workspace",
-                "agentDir": "/home/node/.openclaw/agents/von_braun/agent",
-                "model": "anthropic/claude-haiku-4-5-20251001",
-                "subagents": {
-                    "allowAgents": []
-                }
             }
         ]
     },
@@ -126,27 +96,6 @@
             "match": {
                 "channel": "telegram",
                 "accountId": "main"
-            }
-        },
-        {
-            "agentId": "einstein",
-            "match": {
-                "channel": "telegram",
-                "accountId": "einstein"
-            }
-        },
-        {
-            "agentId": "gauss",
-            "match": {
-                "channel": "telegram",
-                "accountId": "gauss"
-            }
-        },
-        {
-            "agentId": "von_braun",
-            "match": {
-                "channel": "telegram",
-                "accountId": "von_braun"
             }
         }
     ],
@@ -188,15 +137,6 @@
             "accounts": {
                 "main": {
                     "botToken": "${TELEGRAM_BOT_TOKEN}"
-                },
-                "einstein": {
-                    "botToken": "${EINSTEIN_TELEGRAM_BOT_TOKEN}"
-                },
-                "gauss": {
-                    "botToken": "${GAUSS_TELEGRAM_BOT_TOKEN}"
-                },
-                "von_braun": {
-                    "botToken": "${VON_BRAUN_TELEGRAM_BOT_TOKEN}"
                 }
             },
             "groupPolicy": "allowlist",
