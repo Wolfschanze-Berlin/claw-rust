@@ -16,6 +16,15 @@ use crate::views::agent_detail::{AgentAction, AgentDetailState};
 // Persistent UI state for the agents view
 // ---------------------------------------------------------------------------
 
+/// Agent creation mode for the wizard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AgentCreateMode {
+    /// Create a blank agent with just ID and name.
+    Blank,
+    /// Clone an existing agent's settings.
+    Clone,
+}
+
 /// UI state that persists across frames for the agents list.
 pub struct AgentsViewState {
     /// Index of the currently selected agent (if any).
@@ -24,6 +33,12 @@ pub struct AgentsViewState {
     pub new_agent_id: String,
     /// Text buffer for the new agent name input.
     pub new_agent_name: String,
+    /// Whether the creation section is expanded.
+    pub create_section_open: bool,
+    /// Current creation mode (blank or clone).
+    pub create_mode: AgentCreateMode,
+    /// Source agent index to clone from (when create_mode == Clone).
+    pub clone_source: Option<usize>,
     /// Detail form state for the selected agent.
     pub detail_state: Option<AgentDetailState>,
     /// Whether we've already taken an undo snapshot for this detail session.
@@ -36,6 +51,9 @@ impl Default for AgentsViewState {
             selected: None,
             new_agent_id: String::new(),
             new_agent_name: String::new(),
+            create_section_open: false,
+            create_mode: AgentCreateMode::Blank,
+            clone_source: None,
             detail_state: None,
             detail_snapshot_taken: false,
         }
@@ -95,51 +113,215 @@ fn show_list(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut AgentsVi
 // ---------------------------------------------------------------------------
 
 fn show_add_form(ui: &mut egui::Ui, config: &mut ConfigManager, state: &mut AgentsViewState) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("ID:").color(theme::SUBTEXT));
-        ui.add(egui::TextEdit::singleline(&mut state.new_agent_id).desired_width(120.0));
+    // Collapsible creation section
+    let toggle_label = if state.create_section_open {
+        "\u{25bc} New Agent"
+    } else {
+        "\u{25b6} New Agent"
+    };
+    if ui
+        .add(egui::Button::new(
+            egui::RichText::new(toggle_label).color(theme::BLUE),
+        ))
+        .clicked()
+    {
+        state.create_section_open = !state.create_section_open;
+    }
 
-        ui.label(egui::RichText::new("Name:").color(theme::SUBTEXT));
-        ui.add(egui::TextEdit::singleline(&mut state.new_agent_name).desired_width(160.0));
+    if !state.create_section_open {
+        return;
+    }
 
-        let id = state.new_agent_id.trim();
-        let existing_ids: Vec<&str> = config
-            .draft()
-            .agents
-            .as_ref()
-            .and_then(|a| a.list.as_ref())
-            .map(|list| {
-                list.iter()
-                    .filter_map(|e| e.id.as_deref())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let duplicate = existing_ids.contains(&id);
-        let valid = !id.is_empty() && !duplicate;
-
-        if ui
-            .add_enabled(
-                valid,
-                egui::Button::new(egui::RichText::new("+ Add").color(theme::GREEN)),
-            )
-            .clicked()
-        {
-            config.begin_edit();
-            let agents = config.draft_mut().agents.get_or_insert_with(AgentsConfig::default);
-            let list = agents.list.get_or_insert_with(Vec::new);
-            list.push(AgentEntry {
-                id: Some(id.to_string()),
-                name: if state.new_agent_name.trim().is_empty() {
-                    None
-                } else {
-                    Some(state.new_agent_name.trim().to_string())
-                },
-                ..Default::default()
+    egui::Frame::default()
+        .fill(theme::SURFACE0)
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            // Mode selector
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Mode:").color(theme::SUBTEXT));
+                if ui
+                    .selectable_label(
+                        state.create_mode == AgentCreateMode::Blank,
+                        "Blank",
+                    )
+                    .clicked()
+                {
+                    state.create_mode = AgentCreateMode::Blank;
+                    state.clone_source = None;
+                }
+                if ui
+                    .selectable_label(
+                        state.create_mode == AgentCreateMode::Clone,
+                        "Clone Existing",
+                    )
+                    .clicked()
+                {
+                    state.create_mode = AgentCreateMode::Clone;
+                }
             });
-            state.new_agent_id.clear();
-            state.new_agent_name.clear();
-        }
-    });
+
+            ui.add_space(4.0);
+
+            // Clone source picker (only shown in Clone mode)
+            if state.create_mode == AgentCreateMode::Clone {
+                let agents_list = config
+                    .draft()
+                    .agents
+                    .as_ref()
+                    .and_then(|a| a.list.as_ref());
+
+                if let Some(list) = agents_list {
+                    if list.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No agents to clone from.")
+                                .color(theme::YELLOW)
+                                .small(),
+                        );
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Clone from:").color(theme::SUBTEXT),
+                            );
+
+                            let selected_label = state
+                                .clone_source
+                                .and_then(|idx| list.get(idx))
+                                .and_then(|a| a.id.as_deref())
+                                .unwrap_or("Select agent...");
+
+                            egui::ComboBox::from_id_salt("clone_source")
+                                .selected_text(selected_label)
+                                .show_ui(ui, |ui| {
+                                    for (idx, agent) in list.iter().enumerate() {
+                                        let label = agent
+                                            .id
+                                            .as_deref()
+                                            .unwrap_or("<no id>");
+                                        if ui
+                                            .selectable_value(
+                                                &mut state.clone_source,
+                                                Some(idx),
+                                                label,
+                                            )
+                                            .changed()
+                                        {
+                                            // Auto-fill name as "Copy of <source>"
+                                            if state.new_agent_name.is_empty() {
+                                                let source_name = agent
+                                                    .name
+                                                    .as_deref()
+                                                    .or(agent.id.as_deref())
+                                                    .unwrap_or("agent");
+                                                state.new_agent_name =
+                                                    format!("Copy of {source_name}");
+                                            }
+                                        }
+                                    }
+                                });
+                        });
+                    }
+                } else {
+                    ui.label(
+                        egui::RichText::new("No agents to clone from.")
+                            .color(theme::YELLOW)
+                            .small(),
+                    );
+                }
+
+                ui.add_space(4.0);
+            }
+
+            // ID and Name inputs
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("ID:").color(theme::SUBTEXT));
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.new_agent_id).desired_width(120.0),
+                );
+
+                ui.label(egui::RichText::new("Name:").color(theme::SUBTEXT));
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.new_agent_name).desired_width(160.0),
+                );
+            });
+
+            ui.add_space(4.0);
+
+            // Create button
+            let id = state.new_agent_id.trim().to_string();
+            let existing_ids: Vec<String> = config
+                .draft()
+                .agents
+                .as_ref()
+                .and_then(|a| a.list.as_ref())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|e| e.id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let duplicate = existing_ids.iter().any(|x| x == &id);
+            let valid = !id.is_empty()
+                && !duplicate
+                && (state.create_mode == AgentCreateMode::Blank
+                    || state.clone_source.is_some());
+
+            ui.horizontal(|ui| {
+                let button_text = match state.create_mode {
+                    AgentCreateMode::Blank => "+ Create Agent",
+                    AgentCreateMode::Clone => "+ Clone Agent",
+                };
+                if ui
+                    .add_enabled(
+                        valid,
+                        egui::Button::new(egui::RichText::new(button_text).color(theme::GREEN)),
+                    )
+                    .clicked()
+                {
+                    config.begin_edit();
+                    let agents =
+                        config.draft_mut().agents.get_or_insert_with(AgentsConfig::default);
+                    let list = agents.list.get_or_insert_with(Vec::new);
+
+                    let mut new_agent = match state.create_mode {
+                        AgentCreateMode::Clone => {
+                            // Clone from source agent
+                            state
+                                .clone_source
+                                .and_then(|idx| list.get(idx).cloned())
+                                .unwrap_or_default()
+                        }
+                        AgentCreateMode::Blank => AgentEntry::default(),
+                    };
+
+                    // Override ID and name
+                    new_agent.id = Some(id.to_string());
+                    new_agent.name = if state.new_agent_name.trim().is_empty() {
+                        None
+                    } else {
+                        Some(state.new_agent_name.trim().to_string())
+                    };
+                    // Cloned agent should not inherit the "default" flag
+                    if state.create_mode == AgentCreateMode::Clone {
+                        new_agent.default = None;
+                    }
+
+                    list.push(new_agent);
+                    state.new_agent_id.clear();
+                    state.new_agent_name.clear();
+                    state.clone_source = None;
+                    state.create_section_open = false;
+                }
+
+                if duplicate && !id.is_empty() {
+                    ui.label(
+                        egui::RichText::new("ID already exists")
+                            .color(theme::YELLOW)
+                            .small(),
+                    );
+                }
+            });
+        });
 }
 
 // ---------------------------------------------------------------------------
