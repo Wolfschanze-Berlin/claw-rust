@@ -1,0 +1,17 @@
+[package]
+name = "claw-plugins"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+claw-core.workspace = true
+claw-config.workspace = true
+claw-channels.workspace = true
+claw-gateway.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
