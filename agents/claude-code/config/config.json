@@ -1,0 +1,18 @@
+{
+  "models": {
+    "default": ""
+  },
+  "agents": {
+    "defaults": {}
+  },
+  "session": {},
+  "commands": {
+    "native": true,
+    "nativeSkills": true,
+    "bash": true,
+    "config": true,
+    "debug": true,
+    "restart": true
+  },
+  "gateway": {}
+}

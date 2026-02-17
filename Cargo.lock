@@ -967,6 +967,7 @@ dependencies = [
  "claw-agent-tools",
  "claw-agent-workspace",
  "claw-channels",
+ "claw-claude-code",
  "claw-config",
  "claw-core",
  "claw-db",
@@ -978,6 +979,7 @@ dependencies = [
  "claw-telegram",
  "claw-whatsapp",
  "dotenvy",
+ "rusqlite",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1000,6 +1002,23 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "claw-claude-code"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "claw-channels",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -1086,6 +1105,7 @@ dependencies = [
  "claw-agent-tools",
  "claw-agent-workspace",
  "claw-channels",
+ "claw-claude-code",
  "claw-config",
  "claw-core",
  "claw-routing",

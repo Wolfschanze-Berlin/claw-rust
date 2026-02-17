@@ -17,6 +17,7 @@ members = [
     "crates/claw-agent-models",
     "crates/claw-agent-workspace",
     "crates/claw-agent-tools",
+    "crates/claw-claude-code",
 ]
 resolver = "3"
 
@@ -93,3 +94,4 @@ claw-agent-runtime = { path = "crates/claw-agent-runtime" }
 claw-agent-models = { path = "crates/claw-agent-models" }
 claw-agent-workspace = { path = "crates/claw-agent-workspace" }
 claw-agent-tools = { path = "crates/claw-agent-tools" }
+claw-claude-code = { path = "crates/claw-claude-code" }
