@@ -1,0 +1,141 @@
+# Build and release installers for Windows (NSIS) and macOS (DMG).
+# Triggered when a version tag (v*) is pushed — see release.toml for tag format.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Prevent concurrent releases for the same tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimum permissions — the release job elevates to write contents.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Windows — NSIS installer
+  # ---------------------------------------------------------------------------
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # Cache cargo registry, git db, and the target directory.
+      # Keyed on OS + Cargo.lock hash so a lockfile change busts the cache.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            windows-cargo-
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      # cargo-packager runs `cargo build --release` via beforePackagingCommand,
+      # then produces the NSIS installer into target/packages/.
+      - name: Build installer
+        run: cargo packager --release --formats nsis
+
+      # Upload the NSIS installer as a build artifact so the release job can
+      # attach it to the GitHub Release.
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-windows
+          path: target/packages/*.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # macOS — DMG disk image
+  # ---------------------------------------------------------------------------
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            macos-cargo-
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - name: Build installer
+        run: cargo packager --release --formats dmg
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-macos
+          path: target/packages/*.dmg
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Create GitHub Release and attach installers
+  # ---------------------------------------------------------------------------
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-macos]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Extract the version number from the tag (e.g. v0.1.0 -> 0.1.0).
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-windows
+          path: artifacts/windows
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: installer-macos
+          path: artifacts/macos
+
+      # Create a GitHub Release with all installers attached.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Claw v${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/windows/*.exe
+            artifacts/macos/*.dmg
