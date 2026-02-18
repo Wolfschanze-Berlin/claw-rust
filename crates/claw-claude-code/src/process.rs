@@ -175,14 +175,15 @@ impl ClaudeCodeProcess {
     /// Spawn a background task that logs stderr lines.
     ///
     /// Should be called after `stream_messages()` since both take
-    /// child I/O handles.
+    /// child I/O handles. Logs at WARN level so process errors are
+    /// visible at the default log level.
     pub fn spawn_stderr_logger(&mut self) {
         if let Some(stderr) = self.child.stderr.take() {
             tokio::spawn(async move {
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    debug!(target: "claude_code::stderr", "{}", line);
+                    warn!(target: "claude_code::stderr", "{}", line);
                 }
             });
         }

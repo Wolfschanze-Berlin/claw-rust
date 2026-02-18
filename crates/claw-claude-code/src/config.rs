@@ -178,10 +178,6 @@ impl ClaudeCodeConfig {
         args.push("--output-format".into());
         args.push(self.output_format.as_cli_value().into());
 
-        if self.verbose {
-            args.push("--verbose".into());
-        }
-
         self.push_common_args(&mut args);
         args
     }
@@ -205,6 +201,10 @@ impl ClaudeCodeConfig {
 
     /// Push arguments shared between new and resume invocations.
     fn push_common_args(&self, args: &mut Vec<OsString>) {
+        if self.verbose {
+            args.push("--verbose".into());
+        }
+
         if let Some(ref model) = self.model {
             args.push("--model".into());
             args.push(model.into());
@@ -314,6 +314,7 @@ mod tests {
         assert!(args.contains(&"sess-abc".to_owned()));
         assert!(args.contains(&"--print".to_owned()));
         assert!(args.contains(&"continue".to_owned()));
+        assert!(args.contains(&"--verbose".to_owned()));
     }
 
     #[test]

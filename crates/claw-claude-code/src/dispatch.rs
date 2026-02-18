@@ -132,6 +132,17 @@ pub async fn run_claude_code(
                 duration_ms = Some(res.duration_ms);
                 cost_usd = res.total_cost_usd;
 
+                // Use result.result as fallback when no text was accumulated
+                // from AssistantMessage content blocks (e.g. when Claude Code
+                // used tools and the final text is only in the result field).
+                if response_text.is_empty() {
+                    if let Some(ref result_text) = res.result {
+                        if !result_text.is_empty() {
+                            response_text.push_str(result_text);
+                        }
+                    }
+                }
+
                 info!(
                     session_id = %res.session_id,
                     turns = res.num_turns,
@@ -144,9 +155,37 @@ pub async fn run_claude_code(
         }
     }
 
-    // 4. Wait for process to exit.
-    if let Err(e) = process.wait().await {
-        warn!(error = %e, "error waiting for Claude Code process");
+    // 4. Wait for process to exit and check result.
+    let exit_status = process.wait().await;
+    match &exit_status {
+        Ok(status) if !status.success() => {
+            warn!(
+                session_key,
+                code = ?status.code(),
+                "Claude Code process exited with non-zero status"
+            );
+        }
+        Err(e) => {
+            warn!(session_key, error = %e, "error waiting for Claude Code process");
+        }
+        _ => {}
+    }
+
+    // If the process produced no messages at all, treat as an error.
+    if session_id.is_none() && response_text.is_empty() {
+        let code = exit_status.ok().and_then(|s| s.code());
+        warn!(
+            session_key,
+            exit_code = ?code,
+            "Claude Code produced no output — process may have crashed or failed to start"
+        );
+        return Ok(ClaudeCodeRunResult {
+            response_text: "Claude Code did not produce a response. The process may have failed to start or resume the session.".into(),
+            session_id: None,
+            num_turns: None,
+            duration_ms: None,
+            cost_usd: None,
+        });
     }
 
     // 5. Update session mapping.
