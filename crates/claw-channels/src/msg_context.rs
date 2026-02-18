@@ -254,6 +254,14 @@ pub struct MsgContext {
     #[serde(rename = "MediaType", skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
 
+    /// Original filename of the media attachment.
+    #[serde(rename = "MediaFileName", skip_serializing_if = "Option::is_none")]
+    pub media_file_name: Option<String>,
+
+    /// MIME type of the media attachment (e.g. "application/pdf", "image/jpeg").
+    #[serde(rename = "MediaMimeType", skip_serializing_if = "Option::is_none")]
+    pub media_mime_type: Option<String>,
+
     /// Directory for media downloads.
     #[serde(rename = "MediaDir", skip_serializing_if = "Option::is_none")]
     pub media_dir: Option<String>,
@@ -662,6 +670,32 @@ mod tests {
         assert_eq!(json["MediaPath"], "/tmp/img.jpg");
         assert_eq!(json["Sticker"]["emoji"], "\u{1f600}");
         assert_eq!(json["Sticker"]["setName"], "HappyStickers");
+    }
+
+    #[test]
+    fn msg_context_media_file_name_and_mime_type() {
+        let ctx = MsgContext {
+            media_file_name: Some("report.pdf".into()),
+            media_mime_type: Some("application/pdf".into()),
+            media_type: Some("document".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&ctx).unwrap();
+        assert_eq!(json["MediaFileName"], "report.pdf");
+        assert_eq!(json["MediaMimeType"], "application/pdf");
+
+        // Roundtrip deserialize.
+        let ctx2: MsgContext = serde_json::from_value(json).unwrap();
+        assert_eq!(ctx2.media_file_name.as_deref(), Some("report.pdf"));
+        assert_eq!(ctx2.media_mime_type.as_deref(), Some("application/pdf"));
+    }
+
+    #[test]
+    fn msg_context_media_file_name_omitted_when_none() {
+        let ctx = MsgContext::default();
+        let json = serde_json::to_value(&ctx).unwrap();
+        assert!(json.get("MediaFileName").is_none());
+        assert!(json.get("MediaMimeType").is_none());
     }
 
     #[test]

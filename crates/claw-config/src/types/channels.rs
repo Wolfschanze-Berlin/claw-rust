@@ -93,6 +93,12 @@ pub struct TelegramAccountConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poll_timeout_secs: Option<u32>,
 
+    /// Directory for storing downloaded files.
+    /// Default: system temp dir + "/claw-files/".
+    /// Files are stored as `{file_storage_dir}/{account_id}/{chat_id}/{filename}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_storage_dir: Option<String>,
+
     /// Catch-all for extension fields.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
