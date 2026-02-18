@@ -1,7 +1,8 @@
 //! Telegram adapter trait implementations.
 //!
 //! Implements MentionAdapter, CommandAdapter, MessageActionAdapter,
-//! and StreamingAdapter with real teloxide Bot API calls.
+//! StreamingAdapter, GroupAdapter, StatusAdapter, MessagingAdapter,
+//! AuthAdapter, and ThreadingAdapter with real teloxide Bot API calls.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -10,8 +11,9 @@ use teloxide::types::ChatId;
 use tracing::{info, warn};
 
 use claw_channels::plugin::{
-    ChannelCommandAdapter, ChannelMentionAdapter, ChannelMessageActionAdapter,
-    ChannelStreamingAdapter,
+    ChannelAuthAdapter, ChannelCommandAdapter, ChannelGroupAdapter, ChannelMentionAdapter,
+    ChannelMessageActionAdapter, ChannelMessagingAdapter, ChannelStatusAdapter,
+    ChannelStreamingAdapter, ChannelThreadingAdapter,
 };
 use claw_channels::types::{ChannelError, ChannelOutboundContext, OutboundDeliveryResult};
 
@@ -23,6 +25,14 @@ fn parse_chat_id(chat_id: &str) -> Result<ChatId, ChannelError> {
         .parse::<i64>()
         .map(ChatId)
         .map_err(|_| ChannelError::DeliveryFailed(format!("invalid chat_id: {chat_id}")))
+}
+
+/// Parse a message_id string into a teloxide MessageId.
+fn parse_message_id(message_id: &str) -> Result<teloxide::types::MessageId, ChannelError> {
+    message_id
+        .parse::<i32>()
+        .map(teloxide::types::MessageId)
+        .map_err(|_| ChannelError::DeliveryFailed(format!("invalid message_id: {message_id}")))
 }
 
 /// Look up a bot from the shared store by account ID.
@@ -342,6 +352,366 @@ impl ChannelStreamingAdapter for TelegramStreamingAdapter {
 }
 
 // ---------------------------------------------------------------------------
+// GroupAdapter
+// ---------------------------------------------------------------------------
+
+/// Checks admin status, retrieves chat info via the Telegram Bot API.
+pub struct TelegramGroupAdapter {
+    bots: BotStore,
+}
+
+impl TelegramGroupAdapter {
+    pub fn new(bots: BotStore) -> Self {
+        Self { bots }
+    }
+}
+
+#[async_trait]
+impl ChannelGroupAdapter for TelegramGroupAdapter {
+    async fn is_admin(
+        &self,
+        account_id: &str,
+        chat_id: &str,
+        user_id: &str,
+    ) -> Result<bool, ChannelError> {
+        use teloxide::types::ChatMemberKind;
+
+        let bot = get_bot(&self.bots, account_id)?;
+        let cid = parse_chat_id(chat_id)?;
+        let uid: u64 = user_id
+            .parse()
+            .map_err(|_| ChannelError::DeliveryFailed(format!("invalid user_id: {user_id}")))?;
+
+        let member = bot
+            .get_chat_member(cid, teloxide::types::UserId(uid))
+            .await
+            .map_err(|e| {
+                ChannelError::GatewayError(format!("get_chat_member failed: {e}"))
+            })?;
+
+        Ok(matches!(
+            member.kind,
+            ChatMemberKind::Owner(_) | ChatMemberKind::Administrator(_)
+        ))
+    }
+
+    async fn get_members(
+        &self,
+        account_id: &str,
+        chat_id: &str,
+    ) -> Result<Vec<Value>, ChannelError> {
+        // Telegram Bot API does not expose a "list all members" endpoint.
+        // getChatMemberCount is available but only returns a count.
+        // Return the member count as a single-element array for callers
+        // that want at least some group info.
+        let bot = get_bot(&self.bots, account_id)?;
+        let cid = parse_chat_id(chat_id)?;
+
+        let count = bot.get_chat_member_count(cid).await.map_err(|e| {
+            ChannelError::GatewayError(format!("get_chat_member_count failed: {e}"))
+        })?;
+
+        Ok(vec![serde_json::json!({ "member_count": count })])
+    }
+
+    async fn get_chat_title(
+        &self,
+        account_id: &str,
+        chat_id: &str,
+    ) -> Result<Option<String>, ChannelError> {
+        let bot = get_bot(&self.bots, account_id)?;
+        let cid = parse_chat_id(chat_id)?;
+
+        let chat = bot.get_chat(cid).await.map_err(|e| {
+            ChannelError::GatewayError(format!("get_chat failed: {e}"))
+        })?;
+
+        Ok(chat.title().map(|t| t.to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StatusAdapter
+// ---------------------------------------------------------------------------
+
+/// Sends typing indicators via Telegram's `sendChatAction`.
+pub struct TelegramStatusAdapter {
+    bots: BotStore,
+}
+
+impl TelegramStatusAdapter {
+    pub fn new(bots: BotStore) -> Self {
+        Self { bots }
+    }
+}
+
+#[async_trait]
+impl ChannelStatusAdapter for TelegramStatusAdapter {
+    async fn send_typing(
+        &self,
+        account_id: &str,
+        chat_id: &str,
+    ) -> Result<(), ChannelError> {
+        use teloxide::types::ChatAction;
+
+        let bot = get_bot(&self.bots, account_id)?;
+        let cid = parse_chat_id(chat_id)?;
+
+        bot.send_chat_action(cid, ChatAction::Typing)
+            .await
+            .map_err(|e| {
+                ChannelError::GatewayError(format!("send_chat_action failed: {e}"))
+            })?;
+
+        Ok(())
+    }
+
+    // set_online_status: Telegram Bot API has no online/offline concept for
+    // bots, so we use the default no-op implementation from the trait.
+}
+
+// ---------------------------------------------------------------------------
+// MessagingAdapter
+// ---------------------------------------------------------------------------
+
+/// Edits, deletes, and reacts to Telegram messages.
+pub struct TelegramMessagingAdapter {
+    bots: BotStore,
+}
+
+impl TelegramMessagingAdapter {
+    pub fn new(bots: BotStore) -> Self {
+        Self { bots }
+    }
+}
+
+#[async_trait]
+impl ChannelMessagingAdapter for TelegramMessagingAdapter {
+    async fn edit_message(
+        &self,
+        account_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        new_text: &str,
+    ) -> Result<(), ChannelError> {
+        let bot = get_bot(&self.bots, account_id)?;
+        let cid = parse_chat_id(chat_id)?;
+        let mid = parse_message_id(message_id)?;
+
+        bot.edit_message_text(cid, mid, new_text)
+            .await
+            .map_err(|e| {
+                ChannelError::DeliveryFailed(format!("edit_message_text failed: {e}"))
+            })?;
+
+        Ok(())
+    }
+
+    async fn delete_message(
+        &self,
+        account_id: &str,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Result<(), ChannelError> {
+        let bot = get_bot(&self.bots, account_id)?;
+        let cid = parse_chat_id(chat_id)?;
+        let mid = parse_message_id(message_id)?;
+
+        bot.delete_message(cid, mid).await.map_err(|e| {
+            ChannelError::DeliveryFailed(format!("delete_message failed: {e}"))
+        })?;
+
+        Ok(())
+    }
+
+    async fn add_reaction(
+        &self,
+        account_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        reaction: &str,
+    ) -> Result<(), ChannelError> {
+        use teloxide::payloads::SetMessageReactionSetters;
+        use teloxide::types::ReactionType;
+
+        let bot = get_bot(&self.bots, account_id)?;
+        let cid = parse_chat_id(chat_id)?;
+        let mid = parse_message_id(message_id)?;
+
+        let reaction_type = ReactionType::Emoji {
+            emoji: reaction.to_string(),
+        };
+
+        bot.set_message_reaction(cid, mid)
+            .reaction(vec![reaction_type])
+            .await
+            .map_err(|e| {
+                ChannelError::DeliveryFailed(format!("set_message_reaction failed: {e}"))
+            })?;
+
+        Ok(())
+    }
+
+    async fn remove_reaction(
+        &self,
+        account_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        _reaction: &str,
+    ) -> Result<(), ChannelError> {
+        use teloxide::payloads::SetMessageReactionSetters;
+
+        // Telegram's setMessageReaction with an empty array clears all
+        // reactions set by the bot. There is no per-emoji removal.
+        let bot = get_bot(&self.bots, account_id)?;
+        let cid = parse_chat_id(chat_id)?;
+        let mid = parse_message_id(message_id)?;
+
+        bot.set_message_reaction(cid, mid)
+            .reaction(Vec::<teloxide::types::ReactionType>::new())
+            .await
+            .map_err(|e| {
+                ChannelError::DeliveryFailed(format!("remove_reaction failed: {e}"))
+            })?;
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AuthAdapter
+// ---------------------------------------------------------------------------
+
+/// Validates Telegram users by querying chat membership info.
+pub struct TelegramAuthAdapter {
+    bots: BotStore,
+}
+
+impl TelegramAuthAdapter {
+    pub fn new(bots: BotStore) -> Self {
+        Self { bots }
+    }
+}
+
+#[async_trait]
+impl ChannelAuthAdapter for TelegramAuthAdapter {
+    async fn validate_user(
+        &self,
+        account_id: &str,
+        user_id: &str,
+    ) -> Result<bool, ChannelError> {
+        // A user is "valid" if Telegram recognises the ID. We probe by
+        // fetching user profile photos — if the API succeeds the user exists.
+        let bot = get_bot(&self.bots, account_id)?;
+        let uid: u64 = user_id
+            .parse()
+            .map_err(|_| ChannelError::DeliveryFailed(format!("invalid user_id: {user_id}")))?;
+
+        match bot
+            .get_user_profile_photos(teloxide::types::UserId(uid))
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                let msg = e.to_string();
+                // "Bad Request: user not found" → user doesn't exist
+                if msg.contains("user not found") || msg.contains("USER_ID_INVALID") {
+                    Ok(false)
+                } else {
+                    Err(ChannelError::GatewayError(format!(
+                        "get_user_profile_photos failed: {e}"
+                    )))
+                }
+            }
+        }
+    }
+
+    async fn get_user_display_name(
+        &self,
+        account_id: &str,
+        user_id: &str,
+    ) -> Result<Option<String>, ChannelError> {
+        // Telegram Bot API has no direct "get user by ID" method outside of
+        // a chat context. We try getChatMember on the user's private chat
+        // (chatId == userId for private chats).
+        let bot = get_bot(&self.bots, account_id)?;
+        let uid: i64 = user_id
+            .parse()
+            .map_err(|_| ChannelError::DeliveryFailed(format!("invalid user_id: {user_id}")))?;
+
+        // In Telegram, a private chat with a user has chatId == userId.
+        match bot
+            .get_chat_member(ChatId(uid), teloxide::types::UserId(uid as u64))
+            .await
+        {
+            Ok(member) => {
+                let user = member.user;
+                let name = match &user.last_name {
+                    Some(last) => format!("{} {last}", user.first_name),
+                    None => user.first_name.clone(),
+                };
+                Ok(Some(name))
+            }
+            Err(_) => Ok(None),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ThreadingAdapter
+// ---------------------------------------------------------------------------
+
+/// Creates forum topics (threads) in Telegram supergroups.
+pub struct TelegramThreadingAdapter {
+    bots: BotStore,
+}
+
+impl TelegramThreadingAdapter {
+    pub fn new(bots: BotStore) -> Self {
+        Self { bots }
+    }
+}
+
+#[async_trait]
+impl ChannelThreadingAdapter for TelegramThreadingAdapter {
+    async fn create_thread(
+        &self,
+        account_id: &str,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Result<String, ChannelError> {
+        // Telegram "threads" are forum topics in supergroups.
+        // We use the message text (or a default) as the topic name.
+        let bot = get_bot(&self.bots, account_id)?;
+        let cid = parse_chat_id(chat_id)?;
+
+        // Use the message_id as a hint for the topic name.
+        let topic_name = format!("Thread from message #{message_id}");
+
+        let topic = bot
+            .create_forum_topic(cid, &topic_name)
+            .await
+            .map_err(|e| {
+                ChannelError::GatewayError(format!("create_forum_topic failed: {e}"))
+            })?;
+
+        // ThreadId wraps MessageId(i32) — extract the inner value.
+        Ok(topic.thread_id.0.0.to_string())
+    }
+
+    async fn get_thread_replies(
+        &self,
+        _account_id: &str,
+        _chat_id: &str,
+        _thread_id: &str,
+    ) -> Result<Vec<Value>, ChannelError> {
+        // Telegram Bot API does not provide a "get messages in thread" endpoint.
+        // Bots receive thread messages via updates; historical fetch is not supported.
+        Ok(vec![])
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -508,5 +878,100 @@ mod tests {
     fn parse_invalid_message_id() {
         let id: Result<i32, _> = "not_a_number".parse();
         assert!(id.is_err());
+    }
+
+    // -- Shared helpers -------------------------------------------------------
+
+    #[test]
+    fn parse_chat_id_valid() {
+        let cid = parse_chat_id("123456").unwrap();
+        assert_eq!(cid, ChatId(123456));
+    }
+
+    #[test]
+    fn parse_chat_id_negative() {
+        let cid = parse_chat_id("-1001234567890").unwrap();
+        assert_eq!(cid, ChatId(-1001234567890));
+    }
+
+    #[test]
+    fn parse_chat_id_invalid() {
+        assert!(parse_chat_id("not_a_number").is_err());
+    }
+
+    #[test]
+    fn parse_message_id_valid() {
+        let mid = parse_message_id("42").unwrap();
+        assert_eq!(mid, teloxide::types::MessageId(42));
+    }
+
+    #[test]
+    fn parse_message_id_invalid() {
+        assert!(parse_message_id("abc").is_err());
+    }
+
+    #[test]
+    fn get_bot_missing_account() {
+        let store = crate::new_bot_store();
+        let result = get_bot(&store, "nonexistent");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ChannelError::AccountNotFound { channel, account_id } => {
+                assert_eq!(channel, "telegram");
+                assert_eq!(account_id, "nonexistent");
+            }
+            other => panic!("expected AccountNotFound, got: {other:?}"),
+        }
+    }
+
+    // -- GroupAdapter ---------------------------------------------------------
+
+    #[test]
+    fn group_adapter_requires_valid_user_id() {
+        // Verify the user_id parsing logic without a real bot.
+        let uid: Result<u64, _> = "12345".parse();
+        assert!(uid.is_ok());
+        let uid: Result<u64, _> = "not_a_number".parse();
+        assert!(uid.is_err());
+    }
+
+    // -- MessagingAdapter (reaction type construction) ------------------------
+
+    #[test]
+    fn build_emoji_reaction_type() {
+        use teloxide::types::ReactionType;
+
+        let rt = ReactionType::Emoji {
+            emoji: "\u{1F44D}".to_string(),
+        };
+        match rt {
+            ReactionType::Emoji { emoji } => assert_eq!(emoji, "\u{1F44D}"),
+            _ => panic!("expected Emoji variant"),
+        }
+    }
+
+    // -- ThreadingAdapter (thread_id extraction) ------------------------------
+
+    #[test]
+    fn thread_id_to_string() {
+        let tid = teloxide::types::ThreadId(teloxide::types::MessageId(42));
+        assert_eq!(tid.0.0.to_string(), "42");
+    }
+
+    // -- AuthAdapter (user_id parsing) ----------------------------------------
+
+    #[test]
+    fn auth_user_id_parsing() {
+        // Validate that both i64 and u64 parse from the same string.
+        let as_i64: i64 = "123456789".parse().unwrap();
+        let as_u64: u64 = "123456789".parse().unwrap();
+        assert_eq!(as_i64, 123456789);
+        assert_eq!(as_u64, 123456789);
+    }
+
+    #[test]
+    fn auth_user_id_invalid() {
+        let result: Result<u64, _> = "not_a_user".parse();
+        assert!(result.is_err());
     }
 }
