@@ -1,17 +1,19 @@
 //! Telegram ChannelPlugin implementation.
 
 use claw_channels::plugin::{
-    ChannelCommandAdapter, ChannelGatewayAdapter, ChannelMentionAdapter,
-    ChannelMessageActionAdapter, ChannelOutboundAdapter, ChannelPlugin,
-    ChannelStreamingAdapter,
+    ChannelAuthAdapter, ChannelCommandAdapter, ChannelGatewayAdapter, ChannelGroupAdapter,
+    ChannelMentionAdapter, ChannelMessageActionAdapter, ChannelMessagingAdapter,
+    ChannelOutboundAdapter, ChannelPlugin, ChannelStatusAdapter, ChannelStreamingAdapter,
+    ChannelThreadingAdapter,
 };
 use claw_channels::types::{
     ChannelCapabilities, ChannelMeta, ChatType,
 };
 
 use crate::adapters::{
-    TelegramCommandAdapter, TelegramMentionAdapter, TelegramMessageActionAdapter,
-    TelegramStreamingAdapter,
+    TelegramAuthAdapter, TelegramCommandAdapter, TelegramGroupAdapter, TelegramMentionAdapter,
+    TelegramMessageActionAdapter, TelegramMessagingAdapter, TelegramStatusAdapter,
+    TelegramStreamingAdapter, TelegramThreadingAdapter,
 };
 use crate::gateway::TelegramGateway;
 use crate::outbound::TelegramOutbound;
@@ -27,6 +29,11 @@ pub struct TelegramPlugin {
     command: TelegramCommandAdapter,
     message_action: TelegramMessageActionAdapter,
     streaming: TelegramStreamingAdapter,
+    group: TelegramGroupAdapter,
+    status: TelegramStatusAdapter,
+    messaging: TelegramMessagingAdapter,
+    auth: TelegramAuthAdapter,
+    threading: TelegramThreadingAdapter,
 }
 
 impl TelegramPlugin {
@@ -56,7 +63,7 @@ impl TelegramPlugin {
                 reply: Some(true),
                 effects: Some(false),
                 group_management: Some(true),
-                threads: Some(false),
+                threads: Some(true),
                 media: Some(true),
                 native_commands: Some(true),
                 block_streaming: Some(false),
@@ -66,7 +73,12 @@ impl TelegramPlugin {
             mention: TelegramMentionAdapter::new(),
             command: TelegramCommandAdapter::new(bots.clone()),
             message_action: TelegramMessageActionAdapter::new(bots.clone()),
-            streaming: TelegramStreamingAdapter::new(bots),
+            streaming: TelegramStreamingAdapter::new(bots.clone()),
+            group: TelegramGroupAdapter::new(bots.clone()),
+            status: TelegramStatusAdapter::new(bots.clone()),
+            messaging: TelegramMessagingAdapter::new(bots.clone()),
+            auth: TelegramAuthAdapter::new(bots.clone()),
+            threading: TelegramThreadingAdapter::new(bots),
         }
     }
 }
@@ -109,6 +121,26 @@ impl ChannelPlugin for TelegramPlugin {
     fn streaming_adapter(&self) -> Option<&dyn ChannelStreamingAdapter> {
         Some(&self.streaming)
     }
+
+    fn group_adapter(&self) -> Option<&dyn ChannelGroupAdapter> {
+        Some(&self.group)
+    }
+
+    fn status_adapter(&self) -> Option<&dyn ChannelStatusAdapter> {
+        Some(&self.status)
+    }
+
+    fn messaging_adapter(&self) -> Option<&dyn ChannelMessagingAdapter> {
+        Some(&self.messaging)
+    }
+
+    fn auth_adapter(&self) -> Option<&dyn ChannelAuthAdapter> {
+        Some(&self.auth)
+    }
+
+    fn threading_adapter(&self) -> Option<&dyn ChannelThreadingAdapter> {
+        Some(&self.threading)
+    }
 }
 
 #[cfg(test)]
@@ -128,7 +160,7 @@ mod tests {
         let caps = plugin.capabilities();
         assert_eq!(caps.native_commands, Some(true));
         assert_eq!(caps.reactions, Some(true));
-        assert_eq!(caps.threads, Some(false));
+        assert_eq!(caps.threads, Some(true));
     }
 
     #[test]
@@ -140,6 +172,10 @@ mod tests {
         assert!(plugin.command_adapter().is_some());
         assert!(plugin.message_action_adapter().is_some());
         assert!(plugin.streaming_adapter().is_some());
-        assert!(plugin.threading_adapter().is_none());
+        assert!(plugin.group_adapter().is_some());
+        assert!(plugin.status_adapter().is_some());
+        assert!(plugin.messaging_adapter().is_some());
+        assert!(plugin.auth_adapter().is_some());
+        assert!(plugin.threading_adapter().is_some());
     }
 }

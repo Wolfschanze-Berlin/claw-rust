@@ -44,9 +44,13 @@ fn parse_chat_id(chat_id: &str) -> Result<ChatId, ChannelError> {
         .map_err(|_| ChannelError::DeliveryFailed(format!("invalid chat_id: {chat_id}")))
 }
 
-/// Detect media type from a URL path extension.
+/// Detect media type from a URL or local file path extension.
 fn detect_media_type(url: &str) -> &str {
-    let lower = url.to_lowercase();
+    // Strip query parameters and fragments for cleaner extension detection.
+    let path = url.split('?').next().unwrap_or(url);
+    let path = path.split('#').next().unwrap_or(path);
+    let lower = path.to_lowercase();
+
     if lower.ends_with(".jpg")
         || lower.ends_with(".jpeg")
         || lower.ends_with(".png")
@@ -118,7 +122,8 @@ impl ChannelOutboundAdapter for TelegramOutbound {
         if let Some(ref reply_id) = ctx.reply_to_message_id {
             if let Ok(msg_id) = reply_id.parse::<i32>() {
                 request = request.reply_parameters(
-                    ReplyParameters::new(teloxide::types::MessageId(msg_id)),
+                    ReplyParameters::new(teloxide::types::MessageId(msg_id))
+                        .allow_sending_without_reply(),
                 );
             }
         }
@@ -160,11 +165,23 @@ impl ChannelOutboundAdapter for TelegramOutbound {
             "telegram send_media"
         );
 
-        let input = InputFile::url(
-            media_url
-                .parse()
-                .map_err(|e| ChannelError::DeliveryFailed(format!("invalid media URL: {e}")))?,
-        );
+        // Detect whether media_url is an HTTP URL or local file path.
+        let input = if media_url.starts_with("http://") || media_url.starts_with("https://") {
+            InputFile::url(
+                media_url
+                    .parse()
+                    .map_err(|e| ChannelError::DeliveryFailed(format!("invalid media URL: {e}")))?,
+            )
+        } else {
+            // Treat as local file path.
+            let path = std::path::Path::new(media_url);
+            if !path.exists() {
+                return Err(ChannelError::DeliveryFailed(format!(
+                    "media file not found: {media_url}"
+                )));
+            }
+            InputFile::file(path)
+        };
 
         let media_type = detect_media_type(media_url);
 
@@ -291,6 +308,25 @@ mod tests {
     fn detect_document_fallback() {
         assert_eq!(detect_media_type("https://example.com/f.pdf"), "document");
         assert_eq!(detect_media_type("https://example.com/f.zip"), "document");
+    }
+
+    #[test]
+    fn detect_local_file_paths() {
+        assert_eq!(detect_media_type("/tmp/files/photo.jpg"), "photo");
+        assert_eq!(detect_media_type("/data/report.pdf"), "document");
+        assert_eq!(detect_media_type("/data/video.mp4"), "video");
+    }
+
+    #[test]
+    fn detect_url_with_query_params() {
+        assert_eq!(
+            detect_media_type("https://example.com/img.jpg?token=abc"),
+            "photo"
+        );
+        assert_eq!(
+            detect_media_type("https://example.com/v.mp4#section"),
+            "video"
+        );
     }
 
     #[test]

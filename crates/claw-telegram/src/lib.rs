@@ -5,6 +5,7 @@
 //! (edit-in-place), and custom command registration.
 
 pub mod adapters;
+pub mod file_resolver;
 pub mod gateway;
 pub mod normalize;
 pub mod outbound;

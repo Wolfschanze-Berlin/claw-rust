@@ -92,16 +92,21 @@ fn extract_media(common: &MessageCommon, ctx: &mut MsgContext) {
             ctx.body = d.caption.clone();
             ctx.media_type = Some("document".into());
             ctx.media_url = Some(format!("tg://file/{}", d.document.file.id));
+            ctx.media_file_name = d.document.file_name.clone();
+            ctx.media_mime_type = d.document.mime_type.as_ref().map(|m| m.to_string());
         }
         MediaKind::Audio(a) => {
             ctx.body = a.caption.clone();
             ctx.media_type = Some("audio".into());
             ctx.media_url = Some(format!("tg://file/{}", a.audio.file.id));
+            ctx.media_file_name = a.audio.file_name.clone();
+            ctx.media_mime_type = a.audio.mime_type.as_ref().map(|m| m.to_string());
         }
         MediaKind::Video(v) => {
             ctx.body = v.caption.clone();
             ctx.media_type = Some("video".into());
             ctx.media_url = Some(format!("tg://file/{}", v.video.file.id));
+            ctx.media_mime_type = v.video.mime_type.as_ref().map(|m| m.to_string());
         }
         MediaKind::Voice(v) => {
             ctx.body = v.caption.clone();
@@ -122,6 +127,8 @@ fn extract_media(common: &MessageCommon, ctx: &mut MsgContext) {
             ctx.body = a.caption.clone();
             ctx.media_type = Some("animation".into());
             ctx.media_url = Some(format!("tg://file/{}", a.animation.file.id));
+            ctx.media_file_name = a.animation.file_name.clone();
+            ctx.media_mime_type = a.animation.mime_type.as_ref().map(|m| m.to_string());
         }
         _ => {}
     }
@@ -346,6 +353,153 @@ mod tests {
         assert_eq!(ctx.body.as_deref(), Some("Look at this!"));
         assert_eq!(ctx.media_type.as_deref(), Some("photo"));
         assert_eq!(ctx.media_url.as_deref(), Some("tg://file/large_id"));
+    }
+
+    #[test]
+    fn normalizes_document_message_with_metadata() {
+        let update = make_update(r#"{
+            "update_id": 10,
+            "message": {
+                "message_id": 600,
+                "date": 1700000000,
+                "chat": { "id": 12345, "type": "private" },
+                "from": { "id": 99, "is_bot": false, "first_name": "Alice" },
+                "document": {
+                    "file_id": "doc_file_id_123",
+                    "file_unique_id": "doc_uid",
+                    "file_name": "report.pdf",
+                    "mime_type": "application/pdf",
+                    "file_size": 1024
+                },
+                "caption": "Here is the report"
+            }
+        }"#);
+
+        let ctx = normalize_update(&update).expect("should normalize");
+        assert_eq!(ctx.body.as_deref(), Some("Here is the report"));
+        assert_eq!(ctx.media_type.as_deref(), Some("document"));
+        assert_eq!(ctx.media_url.as_deref(), Some("tg://file/doc_file_id_123"));
+        assert_eq!(ctx.media_file_name.as_deref(), Some("report.pdf"));
+        assert_eq!(ctx.media_mime_type.as_deref(), Some("application/pdf"));
+    }
+
+    #[test]
+    fn normalizes_audio_message_with_metadata() {
+        let update = make_update(r#"{
+            "update_id": 11,
+            "message": {
+                "message_id": 601,
+                "date": 1700000000,
+                "chat": { "id": 12345, "type": "private" },
+                "from": { "id": 99, "is_bot": false, "first_name": "Alice" },
+                "audio": {
+                    "file_id": "audio_file_id",
+                    "file_unique_id": "audio_uid",
+                    "duration": 180,
+                    "file_name": "song.mp3",
+                    "mime_type": "audio/mpeg"
+                },
+                "caption": "Listen to this"
+            }
+        }"#);
+
+        let ctx = normalize_update(&update).expect("should normalize");
+        assert_eq!(ctx.body.as_deref(), Some("Listen to this"));
+        assert_eq!(ctx.media_type.as_deref(), Some("audio"));
+        assert_eq!(ctx.media_url.as_deref(), Some("tg://file/audio_file_id"));
+        assert_eq!(ctx.media_file_name.as_deref(), Some("song.mp3"));
+        assert_eq!(ctx.media_mime_type.as_deref(), Some("audio/mpeg"));
+    }
+
+    #[test]
+    fn normalizes_video_message_with_mime() {
+        let update = make_update(r#"{
+            "update_id": 12,
+            "message": {
+                "message_id": 602,
+                "date": 1700000000,
+                "chat": { "id": 12345, "type": "private" },
+                "from": { "id": 99, "is_bot": false, "first_name": "Alice" },
+                "video": {
+                    "file_id": "video_file_id",
+                    "file_unique_id": "video_uid",
+                    "width": 1920,
+                    "height": 1080,
+                    "duration": 30,
+                    "mime_type": "video/mp4"
+                },
+                "caption": "Cool video"
+            }
+        }"#);
+
+        let ctx = normalize_update(&update).expect("should normalize");
+        assert_eq!(ctx.body.as_deref(), Some("Cool video"));
+        assert_eq!(ctx.media_type.as_deref(), Some("video"));
+        assert_eq!(ctx.media_url.as_deref(), Some("tg://file/video_file_id"));
+        assert_eq!(ctx.media_file_name, None); // Video has no file_name in Telegram API
+        assert_eq!(ctx.media_mime_type.as_deref(), Some("video/mp4"));
+    }
+
+    #[test]
+    fn normalizes_voice_message() {
+        let update = make_update(r#"{
+            "update_id": 13,
+            "message": {
+                "message_id": 603,
+                "date": 1700000000,
+                "chat": { "id": 12345, "type": "private" },
+                "from": { "id": 99, "is_bot": false, "first_name": "Alice" },
+                "voice": {
+                    "file_id": "voice_file_id",
+                    "file_unique_id": "voice_uid",
+                    "duration": 5,
+                    "mime_type": "audio/ogg"
+                }
+            }
+        }"#);
+
+        let ctx = normalize_update(&update).expect("should normalize");
+        assert_eq!(ctx.media_type.as_deref(), Some("voice"));
+        assert_eq!(ctx.media_url.as_deref(), Some("tg://file/voice_file_id"));
+        // Voice messages have no file_name or explicit mime in Telegram API
+        assert_eq!(ctx.media_file_name, None);
+        assert_eq!(ctx.media_mime_type, None);
+    }
+
+    #[test]
+    fn normalizes_animation_message_with_metadata() {
+        let update = make_update(r#"{
+            "update_id": 14,
+            "message": {
+                "message_id": 604,
+                "date": 1700000000,
+                "chat": { "id": 12345, "type": "private" },
+                "from": { "id": 99, "is_bot": false, "first_name": "Alice" },
+                "animation": {
+                    "file_id": "anim_file_id",
+                    "file_unique_id": "anim_uid",
+                    "width": 320,
+                    "height": 240,
+                    "duration": 3,
+                    "file_name": "funny.gif",
+                    "mime_type": "video/mp4"
+                },
+                "document": {
+                    "file_id": "anim_file_id",
+                    "file_unique_id": "anim_uid",
+                    "file_name": "funny.gif",
+                    "mime_type": "video/mp4"
+                },
+                "caption": "LOL"
+            }
+        }"#);
+
+        let ctx = normalize_update(&update).expect("should normalize");
+        assert_eq!(ctx.body.as_deref(), Some("LOL"));
+        assert_eq!(ctx.media_type.as_deref(), Some("animation"));
+        assert_eq!(ctx.media_url.as_deref(), Some("tg://file/anim_file_id"));
+        assert_eq!(ctx.media_file_name.as_deref(), Some("funny.gif"));
+        assert_eq!(ctx.media_mime_type.as_deref(), Some("video/mp4"));
     }
 
     #[test]

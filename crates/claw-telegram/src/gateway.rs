@@ -7,6 +7,7 @@ use claw_channels::plugin::ChannelGatewayAdapter;
 use claw_channels::types::{ChannelError, ChannelGatewayContext};
 use claw_config::TelegramAccountConfig;
 
+use crate::file_resolver::{default_file_storage_dir, resolve_and_download};
 use crate::normalize::normalize_update;
 use crate::BotStore;
 
@@ -41,6 +42,9 @@ impl ChannelGatewayAdapter for TelegramGateway {
                 )
             })?;
 
+        // Resolve file storage directory from config or use default.
+        let file_dir = default_file_storage_dir(config.file_storage_dir.as_deref());
+
         // Log a masked token so operators can verify the right credential is loaded.
         let masked = if bot_token.len() > 10 {
             format!("{}…{}", &bot_token[..6], &bot_token[bot_token.len() - 4..])
@@ -51,14 +55,17 @@ impl ChannelGatewayAdapter for TelegramGateway {
             account_id = %ctx.account_id,
             bot_token_hint = %masked,
             has_webhook = config.webhook_url.is_some(),
+            file_dir = %file_dir.display(),
             "starting telegram gateway"
         );
 
         if let Some(webhook_url) = &config.webhook_url {
+            // TODO: Wire file resolver into webhook HTTP handler when implemented.
+            let _ = &file_dir;
             self.start_webhook(&ctx, &bot_token, webhook_url).await
         } else {
             let timeout = config.poll_timeout_secs.unwrap_or(30);
-            self.start_polling(&ctx, &bot_token, timeout).await
+            self.start_polling(&ctx, &bot_token, timeout, &file_dir).await
         }
     }
 
@@ -95,6 +102,7 @@ impl TelegramGateway {
         ctx: &ChannelGatewayContext,
         bot_token: &str,
         timeout_secs: u32,
+        file_dir: &std::path::Path,
     ) -> Result<(), ChannelError> {
         use teloxide::payloads::GetUpdatesSetters;
         use teloxide::requests::Requester;
@@ -143,7 +151,7 @@ impl TelegramGateway {
 
                         // Normalize the teloxide Update into a platform-agnostic MsgContext.
                         match normalize_update(update) {
-                            Some(msg_ctx) => {
+                            Some(mut msg_ctx) => {
                                 tracing::debug!(
                                     update_id = update.id.0,
                                     sender = ?msg_ctx.sender_name,
@@ -151,6 +159,24 @@ impl TelegramGateway {
                                     chat_type = ?msg_ctx.chat_type,
                                     "normalized telegram update"
                                 );
+
+                                // Resolve and download any attached files.
+                                let chat_id = msg_ctx.to.clone().unwrap_or_else(|| "unknown".into());
+                                if let Err(e) = resolve_and_download(
+                                    &bot,
+                                    file_dir,
+                                    &ctx.account_id,
+                                    &chat_id,
+                                    &mut msg_ctx,
+                                )
+                                .await
+                                {
+                                    warn!(
+                                        update_id = update.id.0,
+                                        error = %e,
+                                        "file download failed, continuing without media"
+                                    );
+                                }
 
                                 // Forward to the dispatch pipeline if wired.
                                 if let Some(ref tx) = ctx.dispatch_tx {
