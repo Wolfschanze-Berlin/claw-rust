@@ -20,7 +20,7 @@ pub use error::RuntimeError;
 pub use prompt::{PromptBuilder, PromptContext};
 pub use queue::MessageQueue;
 pub use repair::{repair_transcript, RepairResult};
-pub use runner::{AgentRunner, ContextConfig, QueuedMessage, RunContext, RuntimeDeps, TranscriptStore};
+pub use runner::{AgentRunner, ContextConfig, QueuedMessage, RunContext, RuntimeDeps, TranscriptStore, UserMessage};
 pub use subagent::{
     AnnounceMessage, AnnounceReceiver, SpawnedSubagent, SpawnerConfig, SubagentEntry,
     SubagentRegistry, SubagentSpawner, SubagentState,

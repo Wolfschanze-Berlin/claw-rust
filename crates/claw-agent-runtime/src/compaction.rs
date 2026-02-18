@@ -236,6 +236,7 @@ impl CompactionEngine {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            attachments: None,
         });
         // Keep preserved tail.
         result_messages.extend_from_slice(&messages[tail_start..]);
@@ -321,6 +322,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            attachments: None,
         }
     }
 

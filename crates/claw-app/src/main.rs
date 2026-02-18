@@ -13,7 +13,10 @@ use tracing::{info, warn};
 use claw_agent_models::anthropic::AnthropicProvider;
 use claw_agent_models::catalog::ModelEntry;
 use claw_agent_models::ModelCatalog;
-use claw_agent_runtime::{AgentRunner, RuntimeDeps, SubscriberConfig, TranscriptStore};
+use claw_agent_runtime::{
+    AgentRunner, CompactionConfig, ContextConfig, PruningConfig, RuntimeDeps, SubscriberConfig,
+    TranscriptStore,
+};
 use claw_agent_tools::{PipelineConfig, PolicyEngine, ToolPipeline, ToolRegistry};
 use claw_agent_workspace::AgentWorkspace;
 use claw_channels::manager::ChannelManager;
@@ -267,6 +270,9 @@ fn init_agent_runtime(config: &OpenClawConfig) -> Result<Option<AgentDispatchCon
         transcript_store,
         subscriber_config: SubscriberConfig::default(),
         max_tool_iterations: 10,
+        context_config: ContextConfig::default(),
+        compaction_config: CompactionConfig::default(),
+        pruning_config: PruningConfig::default(),
     });
 
     Ok(Some(AgentDispatchContext {

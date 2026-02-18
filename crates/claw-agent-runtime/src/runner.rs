@@ -26,17 +26,19 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use claw_agent_models::{
-    ChatMessage, ChatRequest, ModelCatalog, ModelProvider, Role,
+    Attachment, ChatMessage, ChatRequest, ModelCatalog, ModelProvider, Role,
     SelectionContext, ToolDefinition,
 };
 use claw_agent_tools::{PolicyContext, ToolPipeline};
 use claw_agent_workspace::AgentWorkspace;
 
+use crate::compaction::{CompactionConfig, CompactionEngine};
 use crate::error::RuntimeError;
 use crate::prompt::{PromptBuilder, PromptContext};
+use crate::pruning::{has_pending_tool_call, PruningConfig, PruningEngine};
 use crate::queue::MessageQueue;
 use crate::subscriber::{ResponseSink, StreamSubscriber, SubscriberConfig};
 
@@ -71,6 +73,36 @@ pub struct RunContext {
     pub user_id: Option<String>,
     /// Optional model override for this run.
     pub model_override: Option<String>,
+}
+
+/// A user message with optional file attachments for multimodal input.
+///
+/// Implements `From<&str>` and `From<String>` so that existing callers
+/// passing plain text continue to work unchanged.
+#[derive(Debug, Clone)]
+pub struct UserMessage {
+    /// The text content of the message.
+    pub text: String,
+    /// Optional file attachments (images, documents).
+    pub attachments: Option<Vec<Attachment>>,
+}
+
+impl From<&str> for UserMessage {
+    fn from(s: &str) -> Self {
+        Self {
+            text: s.to_owned(),
+            attachments: None,
+        }
+    }
+}
+
+impl From<String> for UserMessage {
+    fn from(s: String) -> Self {
+        Self {
+            text: s,
+            attachments: None,
+        }
+    }
 }
 
 /// A message waiting in the per-session queue while a run is already active.
@@ -118,6 +150,12 @@ pub struct RuntimeDeps {
     pub subscriber_config: SubscriberConfig,
     /// Maximum tool call loop iterations before aborting.
     pub max_tool_iterations: usize,
+    /// Context window budget configuration.
+    pub context_config: ContextConfig,
+    /// Compaction engine configuration.
+    pub compaction_config: CompactionConfig,
+    /// Pruning engine configuration.
+    pub pruning_config: PruningConfig,
 }
 
 /// Configuration for context window management.
@@ -176,11 +214,13 @@ impl AgentRunner {
     pub async fn run_agent(
         &self,
         session_key: &str,
-        message: &str,
+        message: impl Into<UserMessage>,
         context: RunContext,
         deps: &RuntimeDeps,
         sink: &dyn ResponseSink,
     ) -> Result<(), RuntimeError> {
+        let user_message = message.into();
+
         // Phase 1–2: Resolve session key and acquire lock.
         {
             let runs = self.active_runs.lock().await;
@@ -210,16 +250,81 @@ impl AgentRunner {
             channel = %context.channel,
             "agent run started"
         );
-        debug!(session_key, message, "run message content");
+        debug!(session_key, message = %user_message.text, "run message content");
 
         // Execute the lifecycle, ensuring cleanup on any outcome.
         let result = self
-            .execute_lifecycle(session_key, message, &context, deps, sink, &cancel_token)
+            .execute_lifecycle(session_key, &user_message, &context, deps, sink, &cancel_token)
             .await;
 
         // Phase 11: Release lock and notify waiters.
         self.active_runs.lock().await.remove(session_key);
         self.run_ended.notify_waiters();
+
+        // Phase 11b: Drain queued messages.
+        // Process buffered messages FIFO — each gets its own lifecycle execution.
+        if result.is_ok() {
+            loop {
+                // Check cancellation between queued runs.
+                if cancel_token.is_cancelled() {
+                    break;
+                }
+
+                let next_msg = {
+                    let queues = self.message_queues.lock().await;
+                    match queues.get(session_key) {
+                        Some(queue) => queue.dequeue().await,
+                        None => None,
+                    }
+                };
+
+                let Some(queued) = next_msg else {
+                    break;
+                };
+
+                info!(
+                    session_key,
+                    queued_age_ms = queued.queued_at.elapsed().as_millis() as u64,
+                    "processing queued message"
+                );
+
+                let queued_user_msg = UserMessage::from(queued.content);
+
+                // Re-acquire lock for the queued run.
+                self.active_runs.lock().await.insert(
+                    session_key.to_owned(),
+                    RunState {
+                        session_key: session_key.to_owned(),
+                        cancel_token: cancel_token.clone(),
+                        is_streaming: AtomicBool::new(false),
+                        started_at: Instant::now(),
+                    },
+                );
+
+                let queued_result = self
+                    .execute_lifecycle(
+                        session_key,
+                        &queued_user_msg,
+                        &context,
+                        deps,
+                        sink,
+                        &cancel_token,
+                    )
+                    .await;
+
+                // Release lock after queued run.
+                self.active_runs.lock().await.remove(session_key);
+                self.run_ended.notify_waiters();
+
+                if let Err(e) = &queued_result {
+                    warn!(
+                        session_key,
+                        error = %e,
+                        "queued message execution failed, continuing drain"
+                    );
+                }
+            }
+        }
 
         result
     }
@@ -228,7 +333,7 @@ impl AgentRunner {
     async fn execute_lifecycle(
         &self,
         session_key: &str,
-        message: &str,
+        message: &UserMessage,
         context: &RunContext,
         deps: &RuntimeDeps,
         sink: &dyn ResponseSink,
@@ -247,39 +352,96 @@ impl AgentRunner {
             "loaded conversation history"
         );
 
-        // Append the new user message.
+        // Append the new user message (with optional attachments).
         history.push(ChatMessage {
             role: Role::User,
-            content: message.to_owned(),
+            content: message.text.clone(),
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            attachments: message.attachments.clone(),
         });
+
+        // Phase 3.5: Lightweight context pruning.
+        // Runs before the budget check — if pruning removes enough content,
+        // the heavier compaction step can be avoided entirely.
+        let pruning_engine = PruningEngine::new(deps.pruning_config.clone());
+        if pruning_engine.needs_pruning(&history) {
+            let prune_result = pruning_engine.prune(history);
+            if prune_result.pruned {
+                debug!(
+                    session_key,
+                    messages_trimmed = prune_result.messages_trimmed,
+                    chars_removed = prune_result.chars_removed,
+                    "context pruning applied"
+                );
+            }
+            history = prune_result.messages;
+        }
+
+        // Iteration counter — tracks tool call loop iterations. Declared here
+        // (before Phase 4) because the compaction safeguard references it.
+        let mut iteration = 0usize;
 
         // Phase 4: Check context window budget.
         // Rough token estimation: ~4 chars per token. This is a conservative
         // heuristic; real tokenization would use the provider's tokenizer.
         let estimated_tokens = history.iter().map(|m| m.content.len() / 4).sum::<usize>() as u64;
         let budget = (deps.provider.max_context_window() as f64
-            * ContextConfig::default().budget_fraction) as u64;
+            * deps.context_config.budget_fraction) as u64;
 
         if estimated_tokens > budget {
             debug!(
                 estimated_tokens,
-                budget, "context budget exceeded, compaction would trigger"
+                budget, "context budget exceeded, running compaction"
             );
-            // Compaction engine (#106) not yet implemented — for now, truncate
-            // older messages to fit within budget. Keep system/last-N messages.
-            let keep = history.len().min(20);
-            let drain_count = history.len().saturating_sub(keep);
-            if drain_count > 0 {
-                history.drain(..drain_count);
-                info!(
+
+            // Compaction safeguard: defer if the last assistant message has an
+            // unresolved tool call — compacting would orphan the pending tool
+            // result and confuse the model on the next iteration.
+            if has_pending_tool_call(&history) && iteration < deps.max_tool_iterations.saturating_sub(1) {
+                debug!(
                     session_key,
-                    removed = drain_count,
-                    remaining = history.len(),
-                    "truncated history to fit context budget"
+                    "compaction deferred: pending tool call detected"
                 );
+            } else {
+                if has_pending_tool_call(&history) {
+                    warn!(
+                        session_key,
+                        "compacting despite pending tool calls (iteration limit)"
+                    );
+                }
+
+                let mut compaction_config = deps.compaction_config.clone();
+                compaction_config.max_token_estimate = budget;
+
+                let compaction_engine = CompactionEngine::new(compaction_config);
+                match compaction_engine.compact(&history) {
+                    Ok(result) => {
+                        if result.compacted {
+                            info!(
+                                session_key,
+                                messages_removed = result.messages_removed,
+                                summary_len = result.summary.as_ref().map(|s| s.len()).unwrap_or(0),
+                                "compaction applied"
+                            );
+                            history = result.messages;
+                        }
+                    }
+                    Err(e) => {
+                        // Compaction failed — fall back to naive truncation.
+                        warn!(
+                            session_key,
+                            error = %e,
+                            "compaction failed, falling back to truncation"
+                        );
+                        let keep = history.len().min(20);
+                        let drain_count = history.len().saturating_sub(keep);
+                        if drain_count > 0 {
+                            history.drain(..drain_count);
+                        }
+                    }
+                }
             }
         }
 
@@ -324,7 +486,6 @@ impl AgentRunner {
             None
         };
 
-        let mut iteration = 0usize;
         loop {
             // Check cancellation before each model call.
             if cancel_token.is_cancelled() {
@@ -389,6 +550,7 @@ impl AgentRunner {
                 name: None,
                 tool_calls: assistant_tool_calls,
                 tool_call_id: None,
+                attachments: None,
             });
 
             // Phase 8: Process tool calls (if any).
@@ -438,6 +600,7 @@ impl AgentRunner {
                     name: Some(tool_call.name.clone()),
                     tool_calls: None,
                     tool_call_id: Some(result.tool_call_id),
+                    attachments: None,
                 });
             }
 
@@ -814,6 +977,9 @@ mod tests {
             transcript_store: store,
             subscriber_config: SubscriberConfig::default(),
             max_tool_iterations: 10,
+            context_config: ContextConfig::default(),
+            compaction_config: CompactionConfig::default(),
+            pruning_config: PruningConfig::default(),
         }
     }
 
@@ -941,6 +1107,7 @@ mod tests {
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    attachments: None,
                 }],
             )
             .await
@@ -1027,10 +1194,311 @@ mod tests {
         assert!(!runner.is_run_active("s1").await);
     }
 
+    #[test]
+    fn user_message_from_str() {
+        let msg = UserMessage::from("hello");
+        assert_eq!(msg.text, "hello");
+        assert!(msg.attachments.is_none());
+    }
+
+    #[test]
+    fn user_message_from_string() {
+        let msg = UserMessage::from(String::from("world"));
+        assert_eq!(msg.text, "world");
+        assert!(msg.attachments.is_none());
+    }
+
+    #[test]
+    fn user_message_with_attachments() {
+        let msg = UserMessage {
+            text: "check this".into(),
+            attachments: Some(vec![Attachment {
+                file_path: "/tmp/img.png".into(),
+                mime_type: "image/png".into(),
+                file_name: Some("img.png".into()),
+            }]),
+        };
+        assert_eq!(msg.text, "check this");
+        let atts = msg.attachments.unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].mime_type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn run_agent_with_user_message_preserves_attachments() {
+        let provider = MockModelProvider::new("mock", vec![MockResponse::Text("I see an image!".into())]);
+        let store = Arc::new(MockTranscriptStore::new());
+        let deps = test_deps(provider, store.clone()).await;
+        let sink = MockSink::new();
+        let runner = AgentRunner::new();
+
+        let msg = UserMessage {
+            text: "what is this?".into(),
+            attachments: Some(vec![Attachment {
+                file_path: "/tmp/photo.jpg".into(),
+                mime_type: "image/jpeg".into(),
+                file_name: Some("photo.jpg".into()),
+            }]),
+        };
+
+        runner
+            .run_agent("s1", msg, test_context(), &deps, &sink)
+            .await
+            .unwrap();
+
+        // Transcript user message should carry the attachment.
+        let saved = store.saved("s1").await.unwrap();
+        assert_eq!(saved[0].role, Role::User);
+        assert_eq!(saved[0].content, "what is this?");
+        let atts = saved[0].attachments.as_ref().unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].mime_type, "image/jpeg");
+        assert_eq!(atts[0].file_name.as_deref(), Some("photo.jpg"));
+        // Assistant message should NOT have attachments.
+        assert!(saved[1].attachments.is_none());
+    }
+
     #[tokio::test]
     async fn wait_for_run_end_returns_immediately_when_no_run() {
         let runner = AgentRunner::new();
         // Should return immediately — no run is active.
         runner.wait_for_run_end("s1").await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: wired subsystems
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn pruning_runs_on_verbose_tool_results() {
+        // Pre-populate history with a verbose tool result followed by an
+        // assistant summary — pruning should truncate the tool result.
+        let store = Arc::new(MockTranscriptStore::new());
+        let verbose_result = "x".repeat(5000); // > max_tool_result_chars (2000)
+        store
+            .save(
+                "s1",
+                &[
+                    ChatMessage {
+                        role: Role::User,
+                        content: "search for something".into(),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        attachments: None,
+                    },
+                    ChatMessage {
+                        role: Role::Assistant,
+                        content: "".into(),
+                        name: None,
+                        tool_calls: Some(vec![ToolCall {
+                            id: "tc1".into(),
+                            name: "search".into(),
+                            arguments: serde_json::json!({}),
+                        }]),
+                        tool_call_id: None,
+                        attachments: None,
+                    },
+                    ChatMessage {
+                        role: Role::Tool,
+                        content: verbose_result.clone(),
+                        name: Some("search".into()),
+                        tool_calls: None,
+                        tool_call_id: Some("tc1".into()),
+                        attachments: None,
+                    },
+                    ChatMessage {
+                        role: Role::Assistant,
+                        content: "Here are the search results summarized.".into(),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        attachments: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let provider =
+            MockModelProvider::new("mock", vec![MockResponse::Text("Got it!".into())]);
+        let mut deps = test_deps(provider, store.clone()).await;
+        deps.pruning_config = PruningConfig {
+            max_tool_result_chars: 2000,
+            max_message_chars: 4000,
+            remove_redundant_system: true,
+            preserve_last_n: 2,
+        };
+        let sink = MockSink::new();
+        let runner = AgentRunner::new();
+
+        runner
+            .run_agent("s1", "follow up", test_context(), &deps, &sink)
+            .await
+            .unwrap();
+
+        // The verbose tool result (5000 chars) should have been pruned.
+        let saved = store.saved("s1").await.unwrap();
+        let tool_msg = saved.iter().find(|m| m.role == Role::Tool).unwrap();
+        assert!(
+            tool_msg.content.len() < verbose_result.len(),
+            "tool result should be truncated by pruning: {} vs {}",
+            tool_msg.content.len(),
+            verbose_result.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_triggers_on_budget_exceeded() {
+        // Create a history with many messages that exceeds the context budget.
+        let store = Arc::new(MockTranscriptStore::new());
+        let mut history = Vec::new();
+        // Each message ~1000 chars → ~250 tokens. With 50 messages → ~12500 tokens.
+        for i in 0..50 {
+            history.push(ChatMessage {
+                role: if i % 2 == 0 { Role::User } else { Role::Assistant },
+                content: format!("Message {} with padding: {}", i, "y".repeat(950)),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                attachments: None,
+            });
+        }
+        store.save("s1", &history).await.unwrap();
+
+        let provider =
+            MockModelProvider::new("mock", vec![MockResponse::Text("Compacted!".into())]);
+        let mut deps = test_deps(provider, store.clone()).await;
+        // Set a very low budget to force compaction.
+        deps.context_config = ContextConfig { budget_fraction: 0.01 };
+        deps.compaction_config = CompactionConfig {
+            max_messages: 10,
+            preserve_recent: 5,
+            max_token_estimate: 500, // Very low to force compaction.
+            max_retries: 3,
+        };
+        let sink = MockSink::new();
+        let runner = AgentRunner::new();
+
+        runner
+            .run_agent("s1", "new message", test_context(), &deps, &sink)
+            .await
+            .unwrap();
+
+        // Saved transcript should have fewer messages than original (50 + 1 new + 1 assistant).
+        let saved = store.saved("s1").await.unwrap();
+        assert!(
+            saved.len() < 52,
+            "compaction should reduce message count: got {}",
+            saved.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_deferred_with_pending_tool_call() {
+        // Create a history where budget is exceeded AND there's a pending tool call.
+        // The model should process the tool call first, then compaction can happen.
+        let store = Arc::new(MockTranscriptStore::new());
+        let mut history = Vec::new();
+        for i in 0..30 {
+            history.push(ChatMessage {
+                role: if i % 2 == 0 { Role::User } else { Role::Assistant },
+                content: format!("Filler message {}: {}", i, "z".repeat(500)),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                attachments: None,
+            });
+        }
+        store.save("s1", &history).await.unwrap();
+
+        // Model first returns a tool call, then returns final text.
+        let tool_call = ToolCall {
+            id: "tc-safe".into(),
+            name: "unknown_tool".into(),
+            arguments: serde_json::json!({"key": "value"}),
+        };
+        let provider = MockModelProvider::new(
+            "mock",
+            vec![
+                MockResponse::WithToolCalls("".into(), vec![tool_call]),
+                MockResponse::Text("Done safely!".into()),
+            ],
+        );
+        let mut deps = test_deps(provider.clone(), store.clone()).await;
+        deps.context_config = ContextConfig { budget_fraction: 0.01 };
+        deps.compaction_config = CompactionConfig {
+            max_messages: 10,
+            preserve_recent: 5,
+            max_token_estimate: 500,
+            max_retries: 3,
+        };
+        let sink = MockSink::new();
+        let runner = AgentRunner::new();
+
+        runner
+            .run_agent("s1", "trigger tool", test_context(), &deps, &sink)
+            .await
+            .unwrap();
+
+        // Provider called twice (tool call + final response).
+        assert_eq!(provider.calls(), 2);
+        // Final response delivered.
+        let chunks = sink.collected().await;
+        assert!(chunks.iter().any(|c| c.contains("Done safely!")));
+    }
+
+    #[tokio::test]
+    async fn queue_drain_processes_buffered_messages() {
+        let store = Arc::new(MockTranscriptStore::new());
+        let provider = MockModelProvider::new(
+            "mock",
+            vec![
+                MockResponse::Text("Reply 1".into()),
+                MockResponse::Text("Reply 2".into()),
+                MockResponse::Text("Reply 3".into()),
+            ],
+        );
+        let deps = test_deps(provider.clone(), store.clone()).await;
+        let sink = MockSink::new();
+        let runner = AgentRunner::new();
+
+        // Enqueue 2 messages before starting a run.
+        runner
+            .queue_message(
+                "s1",
+                QueuedMessage {
+                    content: "queued msg 1".into(),
+                    channel_context: serde_json::json!({}),
+                    queued_at: Instant::now(),
+                },
+            )
+            .await
+            .unwrap();
+        runner
+            .queue_message(
+                "s1",
+                QueuedMessage {
+                    content: "queued msg 2".into(),
+                    channel_context: serde_json::json!({}),
+                    queued_at: Instant::now(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Run with initial message — should process initial + drain 2 queued.
+        runner
+            .run_agent("s1", "initial msg", test_context(), &deps, &sink)
+            .await
+            .unwrap();
+
+        // Provider called 3 times (initial + 2 queued).
+        assert_eq!(provider.calls(), 3);
+
+        // Queue should be empty after drain.
+        let queues = runner.message_queues.lock().await;
+        let q = queues.get("s1").unwrap();
+        assert!(q.is_empty().await, "queue should be empty after drain");
     }
 }

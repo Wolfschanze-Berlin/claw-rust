@@ -288,6 +288,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            attachments: None,
         }
     }
 
@@ -298,6 +299,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: Some(tool_call_id.to_owned()),
+            attachments: None,
         }
     }
 
@@ -312,6 +314,7 @@ mod tests {
                 arguments: serde_json::json!({}),
             }]),
             tool_call_id: None,
+            attachments: None,
         }
     }
 
@@ -571,6 +574,7 @@ mod tests {
                     },
                 ]),
                 tool_call_id: None,
+                attachments: None,
             },
             tool_msg("Result for search.", "tc-1"),
         ];
