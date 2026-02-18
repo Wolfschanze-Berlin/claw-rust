@@ -192,6 +192,160 @@ impl eframe::App for ClawApp {
             }
         }
 
+        // ── Menu bar ──────────────────────────────────────────────────
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                let has_config = self.config_manager.is_some();
+                let is_dirty = self.config_manager.as_ref().map_or(false, |m| m.is_dirty());
+                let can_undo = self.config_manager.as_ref().map_or(false, |m| m.can_undo());
+                let can_redo = self.config_manager.as_ref().map_or(false, |m| m.can_redo());
+
+                // Keyboard shortcuts (consumed once per frame)
+                let save_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::S);
+                let undo_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Z);
+                let redo_shortcut = egui::KeyboardShortcut::new(
+                    egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                    egui::Key::Z,
+                );
+
+                let save_pressed = ctx.input_mut(|i| i.consume_shortcut(&save_shortcut));
+                let undo_pressed = ctx.input_mut(|i| i.consume_shortcut(&undo_shortcut));
+                let redo_pressed = ctx.input_mut(|i| i.consume_shortcut(&redo_shortcut));
+
+                // Apply shortcuts
+                if save_pressed && has_config && is_dirty {
+                    self.commit_state.phase =
+                        views::commit_workflow::CommitPhase::Confirming;
+                }
+                if undo_pressed {
+                    if let Some(mgr) = &mut self.config_manager {
+                        mgr.undo();
+                    }
+                }
+                if redo_pressed {
+                    if let Some(mgr) = &mut self.config_manager {
+                        mgr.redo();
+                    }
+                }
+
+                // ── File ──
+                ui.menu_button("File", |ui| {
+                    if ui
+                        .add_enabled(has_config && is_dirty, egui::Button::new("Save Config\tCtrl+S"))
+                        .clicked()
+                    {
+                        self.commit_state.phase =
+                            views::commit_workflow::CommitPhase::Confirming;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Exit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                // ── Edit ──
+                ui.menu_button("Edit", |ui| {
+                    if ui
+                        .add_enabled(can_undo, egui::Button::new("Undo\tCtrl+Z"))
+                        .clicked()
+                    {
+                        if let Some(mgr) = &mut self.config_manager {
+                            mgr.undo();
+                        }
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(can_redo, egui::Button::new("Redo\tCtrl+Shift+Z"))
+                        .clicked()
+                    {
+                        if let Some(mgr) = &mut self.config_manager {
+                            mgr.redo();
+                        }
+                        ui.close();
+                    }
+                });
+
+                // ── View ──
+                ui.menu_button("View", |ui| {
+                    if ui.selectable_label(self.current_view == View::Dashboard, "Dashboard").clicked() {
+                        self.current_view = View::Dashboard;
+                        ui.close();
+                    }
+                    if ui.selectable_label(self.current_view == View::Logs, "Logs").clicked() {
+                        self.current_view = View::Logs;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            has_config,
+                            egui::Button::new("Settings").selected(self.current_view == View::Config),
+                        )
+                        .clicked()
+                    {
+                        self.current_view = View::Config;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_config,
+                            egui::Button::new("Channels").selected(self.current_view == View::ConfigChannels),
+                        )
+                        .clicked()
+                    {
+                        self.current_view = View::ConfigChannels;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_config,
+                            egui::Button::new("Agents").selected(self.current_view == View::ConfigAgents),
+                        )
+                        .clicked()
+                    {
+                        self.current_view = View::ConfigAgents;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_config,
+                            egui::Button::new("Skills").selected(self.current_view == View::ConfigSkills),
+                        )
+                        .clicked()
+                    {
+                        self.current_view = View::ConfigSkills;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_config,
+                            egui::Button::new("Bindings").selected(self.current_view == View::Bindings),
+                        )
+                        .clicked()
+                    {
+                        self.current_view = View::Bindings;
+                        ui.close();
+                    }
+                });
+
+                // ── Help ──
+                ui.menu_button("Help", |ui| {
+                    if ui.button("Check for Updates").clicked() {
+                        self.update_checker.trigger_check();
+                        self.about_view_state.update_status =
+                            views::about::UpdateCheckStatus::Checking;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.selectable_label(self.current_view == View::About, "About").clicked() {
+                        self.current_view = View::About;
+                        ui.close();
+                    }
+                });
+            });
+        });
+
         // Sidebar navigation
         egui::SidePanel::left("nav_panel")
             .resizable(false)
@@ -433,6 +587,11 @@ impl ClawApp {
 }
 
 fn main() -> eframe::Result<()> {
+    // Load .env before anything else so ${ENV_VAR} substitution in
+    // config files can resolve variables defined there.
+    // Missing .env is fine — env vars may come from the OS instead.
+    let _ = dotenvy::dotenv();
+
     // Set up log capture for GUI
     let (log_tx, log_rx) = mpsc::unbounded_channel();
     let gui_layer = GuiLogLayer::new(log_tx);

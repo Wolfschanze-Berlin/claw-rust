@@ -93,13 +93,33 @@ pub fn show(
     validation_badge::validation_summary_bar(ui, validation);
     ui.add_space(8.0);
 
-    // Tab bar
+    // Tab bar with per-tab error indicators
     ui.horizontal(|ui| {
         for (tab, label) in ALL_TABS {
-            if ui
-                .selectable_label(state.active_tab == *tab, *label)
-                .clicked()
-            {
+            let prefix = tab_validation_prefix(tab);
+            let (errors, warnings) = if !prefix.is_empty() {
+                validation_badge::has_issues_for_prefix(validation, prefix)
+            } else {
+                (0, 0)
+            };
+
+            let selected = state.active_tab == *tab;
+            let response = ui.selectable_label(selected, *label);
+
+            // Show a colored dot after the tab label if it has issues
+            if errors > 0 {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(rect.center(), 4.0, theme::RED);
+            } else if warnings > 0 {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(rect.center(), 4.0, theme::YELLOW);
+            }
+
+            if response.clicked() {
                 state.active_tab = *tab;
             }
         }
@@ -134,6 +154,26 @@ pub fn show(
         });
 
     changed
+}
+
+// ---------------------------------------------------------------------------
+// Tab → validation path prefix mapping
+// ---------------------------------------------------------------------------
+
+/// Return the validation issue path prefix for a given config tab.
+///
+/// This lets us count errors/warnings per tab so we can show indicator
+/// dots on the tab labels.
+fn tab_validation_prefix(tab: &ConfigTab) -> &'static str {
+    match tab {
+        ConfigTab::Gateway => "gateway",
+        ConfigTab::Models => "models",
+        ConfigTab::Session => "session",
+        ConfigTab::Commands => "commands",
+        ConfigTab::AgentDefaults => "agents.defaults",
+        // Raw config covers everything, so no single prefix
+        ConfigTab::RawConfig => "",
+    }
 }
 
 // ---------------------------------------------------------------------------

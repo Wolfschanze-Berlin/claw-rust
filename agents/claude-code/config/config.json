@@ -6,6 +6,16 @@
     "defaults": {}
   },
   "session": {},
+  "channels": {
+    "camelot": {
+      "enabled": true,
+      "accounts": {
+        "default": {
+          "botToken": ""
+        }
+      }
+    }
+  },
   "commands": {
     "native": true,
     "nativeSkills": true,

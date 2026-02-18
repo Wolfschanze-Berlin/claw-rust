@@ -1,514 +1,516 @@
 {
-    "meta": {
-        "lastTouchedVersion": "2026.1.24-3",
-        "lastTouchedAt": "2026-02-09T10:04:19.337Z"
-    },
-    "env": {
-        "shellEnv": {
-            "enabled": true
-        }
-    },
-    "wizard": {
-        "lastRunAt": "2026-02-08T22:11:54.512Z",
-        "lastRunVersion": "2026.1.24-3",
-        "lastRunCommand": "doctor",
-        "lastRunMode": "local"
-    },
-    "update": {
-        "channel": "stable",
-        "checkOnStart": true
-    },
-    "agents": {
-        "defaults": {
-            "models": {
-                "anthropic/claude-opus-4-6": {
-                    "params": {
-                        "cacheControlTtl": "1h"
-                    }
-                },
-                "anthropic/claude-sonnet-4-5-20250929": {},
-                "anthropic/claude-haiku-4-5-20251001": {},
-                "anthropic/claude-opus-4-5-20251101": {},
-                "anthropic/claude-opus-4-1-20250805": {},
-                "anthropic/claude-sonnet-4-20250514": {},
-                "anthropic/claude-opus-4-20250514": {},
-                "anthropic/claude-3-7-sonnet-20250219": {},
-                "anthropic/claude-3-haiku-20240307": {},
-                "openai/gpt-5.2-pro": {},
-                "openai/gpt-5.2": {},
-                "openai/gpt-5.1": {},
-                "openai/gpt-5.1-codex": {},
-                "openai/gpt-5": {},
-                "openai/gpt-5-mini": {},
-                "openai/gpt-5-nano": {},
-                "openai/gpt-4.1": {},
-                "openai/gpt-4.1-mini": {},
-                "openai/gpt-4.1-nano": {},
-                "openai/gpt-4o": {},
-                "openai/gpt-4o-mini": {},
-                "openai/o3": {},
-                "openai/o3-pro": {},
-                "openai/o3-mini": {},
-                "openai/o4-mini": {},
-                "openai/o1": {},
-                "openai/o1-mini": {}
-            },
-            "timeFormat": "24",
-            "memorySearch": {
-                "enabled": true
-            },
-            "contextPruning": {
-                "mode": "cache-ttl",
-                "ttl": "1h"
-            },
-            "compaction": {
-                "mode": "safeguard"
-            },
-            "thinkingDefault": "medium",
-            "verboseDefault": "full",
-            "elevatedDefault": "full",
-            "typingMode": "instant",
-            "heartbeat": {
-                "every": "30m",
-                "includeReasoning": true
-            },
-            "maxConcurrent": 16,
-            "subagents": {
-                "maxConcurrent": 8
-            }
-        },
-        "list": [
-            {
-                "id": "main",
-                "name": "main",
-                "workspace": "/home/node/.openclaw/agents/main/workspace",
-                "agentDir": "/home/node/.openclaw/agents/main/agent",
-                "model": "anthropic/claude-haiku-4-5-20251001",
-                "subagents": {
-                    "allowAgents": []
-                }
-            }
-        ]
-    },
-    "bindings": [
-        {
-            "agentId": "main",
-            "match": {
-                "channel": "telegram",
-                "accountId": "main"
-            }
-        }
-    ],
-    "tools": {
-        "elevated": {
-            "enabled": true,
-            "allowFrom": {
-                "telegram": []
-            }
-        },
-        "agentToAgent": {
-            "enabled": true
-        }
-    },
-    "messages": {
-        "queue": {
-            "mode": "steer+backlog",
-            "byChannel": {
-                "telegram": "steer+backlog"
-            }
-        },
-        "ackReactionScope": "group-mentions"
-    },
-    "commands": {
-        "native": true,
-        "nativeSkills": true,
-        "bash": true,
-        "config": true,
-        "debug": true,
-        "restart": true
-    },
-    "channels": {
-        "telegram": {
-            "markdown": {
-                "tables": "code"
-            },
-            "enabled": true,
-            "dmPolicy": "pairing",
-            "accounts": {
-                "main": {
-                    "botToken": "${TELEGRAM_BOT_TOKEN}"
-                }
-            },
-            "groupPolicy": "allowlist",
-            "streamMode": "partial",
-            "actions": {
-                "reactions": true,
-                "sendMessage": true
-            },
-            "reactionLevel": "extensive",
-            "heartbeat": {
-                "showOk": true,
-                "showAlerts": true,
-                "useIndicator": true
-            },
-            "linkPreview": true,
-            "allowFrom": [
-                "121146099"
-            ]
-        }
-    },
-    "discovery": {
-        "wideArea": {
-            "enabled": false
-        }
-    },
-    "gateway": {
-        "mode": "local",
-        "bind": "lan",
-        "auth": {
-            "mode": "token",
-            "token": "${OPENCLAW_GATEWAY_TOKEN}"
-        }
-    },
-    "skills": {
-        "load": {
-            "watch": true
-        },
-        "install": {
-            "preferBrew": true,
-            "nodeManager": "npm"
-        },
-        "entries": {
-            "nano-banana-pro": {
-                "enabled": true,
-                "apiKey": "${GEMINI_API_KEY}"
-            },
-            "weather": {
-                "enabled": false
-            }
-        }
-    },
-    "plugins": {
-        "entries": {
-            "telegram": {
-                "enabled": true
-            },
-            "llm-task": {
-                "enabled": true
-            }
-        }
-    },
-    "models": {
-        "providers": {
-            "anthropic": {
-                "baseUrl": "https://api.anthropic.com",
-                "auth": "api-key",
-                "api": "anthropic-messages",
-                "models": [
-                    {
-                        "id": "claude-opus-4-6",
-                        "name": "anthropic/claude-opus-4-6",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 128000
-                    },
-                    {
-                        "id": "claude-sonnet-4-5-20250929",
-                        "name": "anthropic/claude-sonnet-4-5-20250929",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 64000
-                    },
-                    {
-                        "id": "claude-haiku-4-5-20251001",
-                        "name": "anthropic/claude-haiku-4-5-20251001",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 64000
-                    },
-                    {
-                        "id": "claude-opus-4-5-20251101",
-                        "name": "anthropic/claude-opus-4-5-20251101",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 64000
-                    },
-                    {
-                        "id": "claude-opus-4-1-20250805",
-                        "name": "anthropic/claude-opus-4-1-20250805",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 32000
-                    },
-                    {
-                        "id": "claude-sonnet-4-20250514",
-                        "name": "anthropic/claude-sonnet-4-20250514",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 64000
-                    },
-                    {
-                        "id": "claude-opus-4-20250514",
-                        "name": "anthropic/claude-opus-4-20250514",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 32000
-                    },
-                    {
-                        "id": "claude-3-7-sonnet-20250219",
-                        "name": "anthropic/claude-3-7-sonnet-20250219",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 64000
-                    },
-                    {
-                        "id": "claude-3-haiku-20240307",
-                        "name": "anthropic/claude-3-haiku-20240307",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": false,
-                        "contextWindow": 200000,
-                        "maxTokens": 4096
-                    }
-                ]
-            },
-            "openai": {
-                "baseUrl": "https://api.openai.com/v1",
-                "auth": "api-key",
-                "api": "openai-responses",
-                "models": [
-                    {
-                        "id": "gpt-5.2-pro",
-                        "name": "openai/gpt-5.2-pro",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 400000,
-                        "maxTokens": 128000
-                    },
-                    {
-                        "id": "gpt-5.2",
-                        "name": "openai/gpt-5.2",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 400000,
-                        "maxTokens": 128000
-                    },
-                    {
-                        "id": "gpt-5.1",
-                        "name": "openai/gpt-5.1",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 400000,
-                        "maxTokens": 128000
-                    },
-                    {
-                        "id": "gpt-5.1-codex",
-                        "name": "openai/gpt-5.1-codex",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 400000,
-                        "maxTokens": 128000
-                    },
-                    {
-                        "id": "gpt-5",
-                        "name": "openai/gpt-5",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 400000,
-                        "maxTokens": 128000
-                    },
-                    {
-                        "id": "gpt-5-mini",
-                        "name": "openai/gpt-5-mini",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 400000,
-                        "maxTokens": 128000
-                    },
-                    {
-                        "id": "gpt-5-nano",
-                        "name": "openai/gpt-5-nano",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 400000,
-                        "maxTokens": 128000
-                    },
-                    {
-                        "id": "gpt-4.1",
-                        "name": "openai/gpt-4.1",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": false,
-                        "contextWindow": 1047576,
-                        "maxTokens": 32768
-                    },
-                    {
-                        "id": "gpt-4.1-mini",
-                        "name": "openai/gpt-4.1-mini",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": false,
-                        "contextWindow": 1047576,
-                        "maxTokens": 32768
-                    },
-                    {
-                        "id": "gpt-4.1-nano",
-                        "name": "openai/gpt-4.1-nano",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": false,
-                        "contextWindow": 1047576,
-                        "maxTokens": 32768
-                    },
-                    {
-                        "id": "gpt-4o",
-                        "name": "openai/gpt-4o",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": false,
-                        "contextWindow": 128000,
-                        "maxTokens": 16384
-                    },
-                    {
-                        "id": "gpt-4o-mini",
-                        "name": "openai/gpt-4o-mini",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": false,
-                        "contextWindow": 128000,
-                        "maxTokens": 16384
-                    },
-                    {
-                        "id": "o3",
-                        "name": "openai/o3",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 100000
-                    },
-                    {
-                        "id": "o3-pro",
-                        "name": "openai/o3-pro",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 100000
-                    },
-                    {
-                        "id": "o3-mini",
-                        "name": "openai/o3-mini",
-                        "input": [
-                            "text"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 100000
-                    },
-                    {
-                        "id": "o4-mini",
-                        "name": "openai/o4-mini",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 100000
-                    },
-                    {
-                        "id": "o1",
-                        "name": "openai/o1",
-                        "input": [
-                            "text",
-                            "image"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 200000,
-                        "maxTokens": 100000
-                    },
-                    {
-                        "id": "o1-mini",
-                        "name": "openai/o1-mini",
-                        "input": [
-                            "text"
-                        ],
-                        "reasoning": true,
-                        "contextWindow": 128000,
-                        "maxTokens": 65536
-                    }
-                ]
-            }
-        }
+  "meta": {
+    "lastTouchedVersion": "2026.1.24-3",
+    "lastTouchedAt": "2026-02-09T10:04:19.337Z"
+  },
+  "env": {
+    "shellEnv": {
+      "enabled": true
     }
+  },
+  "wizard": {
+    "lastRunAt": "2026-02-08T22:11:54.512Z",
+    "lastRunVersion": "2026.1.24-3",
+    "lastRunCommand": "doctor",
+    "lastRunMode": "local"
+  },
+  "update": {
+    "channel": "stable",
+    "checkOnStart": true
+  },
+  "models": {
+    "providers": {
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "auth": "api-key",
+        "api": "openai-responses",
+        "models": [
+          {
+            "id": "gpt-5.2-pro",
+            "name": "openai/gpt-5.2-pro",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 400000,
+            "maxTokens": 128000
+          },
+          {
+            "id": "gpt-5.2",
+            "name": "openai/gpt-5.2",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 400000,
+            "maxTokens": 128000
+          },
+          {
+            "id": "gpt-5.1",
+            "name": "openai/gpt-5.1",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 400000,
+            "maxTokens": 128000
+          },
+          {
+            "id": "gpt-5.1-codex",
+            "name": "openai/gpt-5.1-codex",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 400000,
+            "maxTokens": 128000
+          },
+          {
+            "id": "gpt-5",
+            "name": "openai/gpt-5",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 400000,
+            "maxTokens": 128000
+          },
+          {
+            "id": "gpt-5-mini",
+            "name": "openai/gpt-5-mini",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 400000,
+            "maxTokens": 128000
+          },
+          {
+            "id": "gpt-5-nano",
+            "name": "openai/gpt-5-nano",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 400000,
+            "maxTokens": 128000
+          },
+          {
+            "id": "gpt-4.1",
+            "name": "openai/gpt-4.1",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": false,
+            "contextWindow": 1047576,
+            "maxTokens": 32768
+          },
+          {
+            "id": "gpt-4.1-mini",
+            "name": "openai/gpt-4.1-mini",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": false,
+            "contextWindow": 1047576,
+            "maxTokens": 32768
+          },
+          {
+            "id": "gpt-4.1-nano",
+            "name": "openai/gpt-4.1-nano",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": false,
+            "contextWindow": 1047576,
+            "maxTokens": 32768
+          },
+          {
+            "id": "gpt-4o",
+            "name": "openai/gpt-4o",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": false,
+            "contextWindow": 128000,
+            "maxTokens": 16384
+          },
+          {
+            "id": "gpt-4o-mini",
+            "name": "openai/gpt-4o-mini",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": false,
+            "contextWindow": 128000,
+            "maxTokens": 16384
+          },
+          {
+            "id": "o3",
+            "name": "openai/o3",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 100000
+          },
+          {
+            "id": "o3-pro",
+            "name": "openai/o3-pro",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 100000
+          },
+          {
+            "id": "o3-mini",
+            "name": "openai/o3-mini",
+            "input": [
+              "text"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 100000
+          },
+          {
+            "id": "o4-mini",
+            "name": "openai/o4-mini",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 100000
+          },
+          {
+            "id": "o1",
+            "name": "openai/o1",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 100000
+          },
+          {
+            "id": "o1-mini",
+            "name": "openai/o1-mini",
+            "input": [
+              "text"
+            ],
+            "reasoning": true,
+            "contextWindow": 128000,
+            "maxTokens": 65536
+          }
+        ]
+      },
+      "anthropic": {
+        "baseUrl": "https://api.anthropic.com",
+        "auth": "api-key",
+        "api": "anthropic-messages",
+        "models": [
+          {
+            "id": "claude-opus-4-6",
+            "name": "anthropic/claude-opus-4-6",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 128000
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929",
+            "name": "anthropic/claude-sonnet-4-5-20250929",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 64000
+          },
+          {
+            "id": "claude-haiku-4-5-20251001",
+            "name": "anthropic/claude-haiku-4-5-20251001",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 64000
+          },
+          {
+            "id": "claude-opus-4-5-20251101",
+            "name": "anthropic/claude-opus-4-5-20251101",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 64000
+          },
+          {
+            "id": "claude-opus-4-1-20250805",
+            "name": "anthropic/claude-opus-4-1-20250805",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          },
+          {
+            "id": "claude-sonnet-4-20250514",
+            "name": "anthropic/claude-sonnet-4-20250514",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 64000
+          },
+          {
+            "id": "claude-opus-4-20250514",
+            "name": "anthropic/claude-opus-4-20250514",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          },
+          {
+            "id": "claude-3-7-sonnet-20250219",
+            "name": "anthropic/claude-3-7-sonnet-20250219",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 64000
+          },
+          {
+            "id": "claude-3-haiku-20240307",
+            "name": "anthropic/claude-3-haiku-20240307",
+            "input": [
+              "text",
+              "image"
+            ],
+            "reasoning": false,
+            "contextWindow": 200000,
+            "maxTokens": 4096
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "models": {
+        "openai/gpt-4.1": {},
+        "anthropic/claude-sonnet-4-5-20250929": {},
+        "openai/o3-mini": {},
+        "anthropic/claude-opus-4-6": {
+          "params": {
+            "cacheControlTtl": "1h"
+          }
+        },
+        "anthropic/claude-sonnet-4-20250514": {},
+        "anthropic/claude-opus-4-20250514": {},
+        "openai/o3": {},
+        "openai/gpt-4.1-nano": {},
+        "openai/gpt-4o-mini": {},
+        "openai/o1": {},
+        "openai/gpt-5-mini": {},
+        "openai/gpt-5.1-codex": {},
+        "openai/o1-mini": {},
+        "anthropic/claude-3-haiku-20240307": {},
+        "openai/gpt-4o": {},
+        "anthropic/claude-haiku-4-5-20251001": {},
+        "anthropic/claude-opus-4-1-20250805": {},
+        "openai/o3-pro": {},
+        "anthropic/claude-opus-4-5-20251101": {},
+        "anthropic/claude-3-7-sonnet-20250219": {},
+        "openai/gpt-5-nano": {},
+        "openai/gpt-5.1": {},
+        "openai/gpt-5.2": {},
+        "openai/gpt-5.2-pro": {},
+        "openai/gpt-5": {},
+        "openai/o4-mini": {},
+        "openai/gpt-4.1-mini": {}
+      },
+      "timeFormat": "24",
+      "memorySearch": {
+        "enabled": true
+      },
+      "contextPruning": {
+        "mode": "cache-ttl",
+        "ttl": "1h"
+      },
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "thinkingDefault": "medium",
+      "verboseDefault": "full",
+      "elevatedDefault": "full",
+      "typingMode": "instant",
+      "heartbeat": {
+        "every": "30m",
+        "includeReasoning": true
+      },
+      "maxConcurrent": 16,
+      "subagents": {
+        "maxConcurrent": 8
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "name": "main",
+        "workspace": "/home/node/.openclaw/agents/main/workspace",
+        "agentDir": "/home/node/.openclaw/agents/main/agent",
+        "model": "anthropic/claude-opus-4-6",
+        "subagents": {
+          "allowAgents": []
+        },
+        "default": true
+      }
+    ]
+  },
+  "tools": {
+    "elevated": {
+      "enabled": true,
+      "allowFrom": {
+        "telegram": []
+      }
+    },
+    "agentToAgent": {
+      "enabled": true
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "main",
+      "match": {
+        "channel": "telegram",
+        "accountId": "main"
+      }
+    }
+  ],
+  "session": {},
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist",
+      "streamMode": "partial",
+      "markdown": {
+        "tables": "code"
+      },
+      "accounts": {
+        "main": {
+          "botToken": "8511605541:AAE7m-p04ShjgnJwILJ7NPhxQi0iOFCYJ-s"
+        }
+      },
+      "actions": {
+        "reactions": true,
+        "sendMessage": true
+      },
+      "reactionLevel": "extensive",
+      "heartbeat": {
+        "showAlerts": true,
+        "showOk": true,
+        "useIndicator": true
+      },
+      "linkPreview": true,
+      "allowFrom": [
+        "121146099"
+      ]
+    }
+  },
+  "messages": {
+    "queue": {
+      "mode": "steer+backlog",
+      "byChannel": {
+        "telegram": "steer+backlog"
+      }
+    },
+    "ackReactionScope": "group-mentions"
+  },
+  "commands": {
+    "native": true,
+    "nativeSkills": true,
+    "bash": true,
+    "config": true,
+    "debug": true,
+    "restart": true
+  },
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "auth": {
+      "mode": "token",
+      "token": "f148b101dbf556afce832eee34666615835de1c5a6b38f224b52bc9b282aa330"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "llm-task": {
+        "enabled": true
+      },
+      "telegram": {
+        "enabled": true
+      }
+    }
+  },
+  "skills": {
+    "load": {
+      "watch": true
+    },
+    "install": {
+      "preferBrew": true,
+      "nodeManager": "npm"
+    },
+    "entries": {
+      "nano-banana-pro": {
+        "enabled": true,
+        "apiKey": "AIzaSyA8P1kpqrYjvhi0qc3XdYYCswbciOgKEBs"
+      },
+      "weather": {
+        "enabled": false
+      }
+    }
+  },
+  "discovery": {
+    "wideArea": {
+      "enabled": false
+    }
+  }
 }

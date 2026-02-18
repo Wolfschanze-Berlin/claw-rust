@@ -20,6 +20,7 @@ serde_json.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 semver.workspace = true
 futures-util.workspace = true
+dotenvy.workspace = true
 claw-config = { path = "../claw-config" }
 
 [dev-dependencies]

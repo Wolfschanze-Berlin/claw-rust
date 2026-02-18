@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 use claw_channels::{FinalizedMsgContext, ReplyPayload};
 
 use claw_agent_runtime::{
-    AgentRunner, DeliveryError, ResponseSink, RunContext, RuntimeDeps,
+    AgentRunner, DeliveryError, ResponseSink, RunContext, RuntimeDeps, UserMessage,
 };
 
 use crate::command_queue::{CommandQueue, MAIN_LANE};
@@ -310,6 +310,20 @@ pub async fn dispatch_inbound_message(
         }
     }
 
+    // Clean up downloaded media file after dispatch completes.
+    if let Some(ref media_path) = msg.media_path {
+        if let Err(e) = tokio::fs::remove_file(media_path).await {
+            debug!(
+                session_key = %session_key,
+                media_path = %media_path,
+                error = %e,
+                "media file cleanup failed (may already be deleted)"
+            );
+        } else {
+            debug!(session_key = %session_key, media_path = %media_path, "media file cleaned up");
+        }
+    }
+
     Ok(result)
 }
 
@@ -433,6 +447,31 @@ pub async fn dispatch_with_agent(
         warn!(session_key = %session_key, error = %e, "failed to send typing indicator");
     }
 
+    // Build a UserMessage with optional media attachments.
+    let user_message = {
+        let attachments = msg
+            .media_path
+            .as_ref()
+            .filter(|p| !p.is_empty())
+            .map(|path| {
+                let mime_type = msg
+                    .media_mime_type
+                    .as_deref()
+                    .unwrap_or("application/octet-stream")
+                    .to_owned();
+                let file_name = msg.media_file_name.clone();
+                vec![claw_agent_models::Attachment {
+                    file_path: path.clone(),
+                    mime_type,
+                    file_name,
+                }]
+            });
+        UserMessage {
+            text: body.clone(),
+            attachments,
+        }
+    };
+
     // Clone for the closure ('static + Send).
     let sk = session_key.clone();
     let aid = agent_id.clone();
@@ -441,7 +480,6 @@ pub async fn dispatch_with_agent(
     let runner = Arc::clone(&agent_ctx.runner);
     let deps = Arc::clone(&agent_ctx.deps);
     let on_partial = options.on_partial_reply.clone();
-    let body_clone = body.clone();
     let user_id = msg.sender_id.clone();
     let channel = msg
         .provider
@@ -491,7 +529,7 @@ pub async fn dispatch_with_agent(
 
             // Run the agent through its 11-phase lifecycle.
             let run_result = runner
-                .run_agent(&sk, &body_clone, run_context, &deps, &sink)
+                .run_agent(&sk, user_message, run_context, &deps, &sink)
                 .await;
 
             match run_result {
@@ -545,6 +583,20 @@ pub async fn dispatch_with_agent(
     if let Some(ref payload) = result.reply {
         if let Err(e) = dispatcher.send_reply(&session_key, payload).await {
             warn!(session_key = %session_key, error = %e, "failed to send reply");
+        }
+    }
+
+    // Clean up downloaded media file after dispatch completes.
+    if let Some(ref media_path) = msg.media_path {
+        if let Err(e) = tokio::fs::remove_file(media_path).await {
+            debug!(
+                session_key = %session_key,
+                media_path = %media_path,
+                error = %e,
+                "media file cleanup failed (may already be deleted)"
+            );
+        } else {
+            debug!(session_key = %session_key, media_path = %media_path, "media file cleaned up");
         }
     }
 
@@ -813,7 +865,8 @@ mod tests {
     use claw_agent_models::provider::ChatStream;
     use claw_agent_models::catalog::ModelEntry;
     use claw_agent_runtime::{
-        AgentRunner, RuntimeDeps, TranscriptStore, SubscriberConfig,
+        AgentRunner, CompactionConfig, ContextConfig, PruningConfig, RuntimeDeps, SubscriberConfig,
+        TranscriptStore,
     };
     use claw_agent_tools::{PolicyEngine, ToolRegistry, PipelineConfig, ToolPipeline};
     use claw_agent_workspace::AgentWorkspace;
@@ -924,6 +977,9 @@ mod tests {
                 transcript_store: Arc::new(MockTranscriptStore),
                 subscriber_config: SubscriberConfig::default(),
                 max_tool_iterations: 10,
+                context_config: ContextConfig::default(),
+                compaction_config: CompactionConfig::default(),
+                pruning_config: PruningConfig::default(),
             }),
         }
     }
@@ -989,6 +1045,98 @@ mod tests {
         // Command should be handled without calling the agent runtime.
         let text = result.reply.as_ref().unwrap().text.as_deref().unwrap();
         assert!(text.contains("help"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_cleans_up_media_file() {
+        // Create a real temp file to verify cleanup.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let media_path = tmp.path().to_string_lossy().into_owned();
+        // Keep the file open — into_temp_path() releases the handle.
+        let tmp_path = tmp.into_temp_path();
+        assert!(std::path::Path::new(&media_path).exists());
+
+        let ctx = MsgContext {
+            body: Some("file attached".into()),
+            session_key: Some("media-session".into()),
+            media_path: Some(media_path.clone()),
+            ..Default::default()
+        };
+        let finalized = FinalizedMsgContext::from_msg_context(ctx);
+        let queue = CommandQueue::new();
+        let dispatcher = BufferedReplyDispatcher::new();
+        let options = GetReplyOptions {
+            run_id: "run-media".into(),
+            cancel: CancellationToken::new(),
+            on_partial_reply: None,
+            on_tool_result: None,
+        };
+
+        let result = dispatch_inbound_message(&finalized, &queue, &dispatcher, &options)
+            .await
+            .unwrap();
+
+        assert!(result.error.is_none());
+        // The file should have been deleted by the cleanup logic.
+        assert!(
+            !std::path::Path::new(&media_path).exists(),
+            "media file should be cleaned up after dispatch"
+        );
+
+        // Prevent tmp_path destructor from failing on missing file.
+        let _ = tmp_path;
+    }
+
+    #[tokio::test]
+    async fn dispatch_no_media_path_no_cleanup_error() {
+        // Dispatch without media_path should succeed without errors.
+        let ctx = MsgContext {
+            body: Some("no media".into()),
+            session_key: Some("no-media-session".into()),
+            ..Default::default()
+        };
+        let finalized = FinalizedMsgContext::from_msg_context(ctx);
+        let queue = CommandQueue::new();
+        let dispatcher = BufferedReplyDispatcher::new();
+        let options = GetReplyOptions {
+            run_id: "run-no-media".into(),
+            cancel: CancellationToken::new(),
+            on_partial_reply: None,
+            on_tool_result: None,
+        };
+
+        let result = dispatch_inbound_message(&finalized, &queue, &dispatcher, &options)
+            .await
+            .unwrap();
+
+        assert!(result.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn dispatch_missing_media_file_does_not_fail() {
+        // If the media file doesn't exist (already deleted), dispatch should not fail.
+        let ctx = MsgContext {
+            body: Some("stale path".into()),
+            session_key: Some("stale-session".into()),
+            media_path: Some("/nonexistent/path/file.jpg".into()),
+            ..Default::default()
+        };
+        let finalized = FinalizedMsgContext::from_msg_context(ctx);
+        let queue = CommandQueue::new();
+        let dispatcher = BufferedReplyDispatcher::new();
+        let options = GetReplyOptions {
+            run_id: "run-stale".into(),
+            cancel: CancellationToken::new(),
+            on_partial_reply: None,
+            on_tool_result: None,
+        };
+
+        let result = dispatch_inbound_message(&finalized, &queue, &dispatcher, &options)
+            .await
+            .unwrap();
+
+        // Should succeed — missing file is logged at debug level, not an error.
+        assert!(result.error.is_none());
     }
 
     #[tokio::test]
