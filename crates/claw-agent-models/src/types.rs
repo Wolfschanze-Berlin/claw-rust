@@ -50,6 +50,26 @@ pub struct ToolDefinition {
 }
 
 // ---------------------------------------------------------------------------
+// Attachment (multimodal content)
+// ---------------------------------------------------------------------------
+
+/// A file attachment associated with a user message (image, document, etc.).
+///
+/// Attachments are carried alongside the text content and converted to
+/// provider-specific formats (e.g. Anthropic base64 image blocks) at the
+/// provider layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    /// Absolute path to the downloaded file on the local filesystem.
+    pub file_path: String,
+    /// MIME type of the file (e.g. "image/jpeg", "application/pdf").
+    pub mime_type: String,
+    /// Optional human-readable filename.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // ChatMessage
 // ---------------------------------------------------------------------------
 
@@ -64,6 +84,9 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// File attachments (images, documents) for multimodal messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<Attachment>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +197,70 @@ mod tests {
     }
 
     #[test]
+    fn attachment_serde_roundtrip() {
+        let a = Attachment {
+            file_path: "/tmp/photo.jpg".into(),
+            mime_type: "image/jpeg".into(),
+            file_name: Some("photo.jpg".into()),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let parsed: Attachment = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.file_path, "/tmp/photo.jpg");
+        assert_eq!(parsed.mime_type, "image/jpeg");
+        assert_eq!(parsed.file_name.as_deref(), Some("photo.jpg"));
+    }
+
+    #[test]
+    fn attachment_file_name_omitted_when_none() {
+        let a = Attachment {
+            file_path: "/tmp/file.bin".into(),
+            mime_type: "application/octet-stream".into(),
+            file_name: None,
+        };
+        let json = serde_json::to_value(&a).unwrap();
+        assert!(json.get("file_name").is_none());
+    }
+
+    #[test]
+    fn chat_message_with_attachments_serde() {
+        let msg = ChatMessage {
+            role: Role::User,
+            content: "check this image".into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Some(vec![Attachment {
+                file_path: "/tmp/img.png".into(),
+                mime_type: "image/png".into(),
+                file_name: Some("img.png".into()),
+            }]),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        let atts = json["attachments"].as_array().unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0]["mime_type"], "image/png");
+
+        // Round-trip
+        let parsed: ChatMessage = serde_json::from_value(json).unwrap();
+        let atts = parsed.attachments.unwrap();
+        assert_eq!(atts[0].file_path, "/tmp/img.png");
+    }
+
+    #[test]
+    fn chat_message_attachments_omitted_when_none() {
+        let msg = ChatMessage {
+            role: Role::User,
+            content: "plain text".into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: None,
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(json.get("attachments").is_none());
+    }
+
+    #[test]
     fn chat_message_serde_omits_none_fields() {
         let msg = ChatMessage {
             role: Role::User,
@@ -181,6 +268,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            attachments: None,
         };
         let json = serde_json::to_value(&msg).unwrap();
         let obj = json.as_object().unwrap();

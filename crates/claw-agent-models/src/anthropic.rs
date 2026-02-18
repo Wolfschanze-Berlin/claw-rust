@@ -17,7 +17,8 @@ use crate::anthropic_sse::parse_sse_stream;
 use crate::error::ModelError;
 use crate::provider::{ChatStream, ModelProvider};
 use crate::types::{
-    ChatMessage, ChatRequest, ChatResponse, FinishReason, Role, ToolCall, ToolDefinition, Usage,
+    Attachment, ChatMessage, ChatRequest, ChatResponse, FinishReason, Role, ToolCall,
+    ToolDefinition, Usage,
 };
 
 // ---------------------------------------------------------------------------
@@ -301,6 +302,8 @@ enum AnthropicContent {
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: ImageSource },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -314,6 +317,15 @@ enum AnthropicContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+}
+
+/// Base64-encoded image source for the Anthropic content block.
+#[derive(Serialize)]
+struct ImageSource {
+    #[serde(rename = "type")]
+    source_type: &'static str,
+    media_type: String,
+    data: String,
 }
 
 #[derive(Serialize)]
@@ -408,10 +420,62 @@ fn convert_message(msg: &ChatMessage) -> AnthropicMessage {
         }
     }
 
+    // User messages with attachments use structured content blocks
+    // (image blocks before text block).
+    if msg.role == Role::User {
+        if let Some(ref attachments) = msg.attachments {
+            let image_blocks = build_image_blocks(attachments);
+            if !image_blocks.is_empty() {
+                let mut blocks = image_blocks;
+                if !msg.content.is_empty() {
+                    blocks.push(AnthropicContentBlock::Text {
+                        text: msg.content.clone(),
+                    });
+                }
+                return AnthropicMessage {
+                    role: role.into(),
+                    content: AnthropicContent::Blocks(blocks),
+                };
+            }
+        }
+    }
+
     AnthropicMessage {
         role: role.into(),
         content: AnthropicContent::Text(msg.content.clone()),
     }
+}
+
+/// Read attachments from disk, base64-encode them, and produce Image content blocks.
+///
+/// Non-image attachments and files that fail to read are silently skipped.
+fn build_image_blocks(attachments: &[Attachment]) -> Vec<AnthropicContentBlock> {
+    use base64::Engine;
+
+    attachments
+        .iter()
+        .filter(|a| a.mime_type.starts_with("image/"))
+        .filter_map(|a| {
+            let bytes = std::fs::read(&a.file_path)
+                .map_err(|e| {
+                    tracing::warn!(
+                        file_path = %a.file_path,
+                        error = %e,
+                        "failed to read attachment file for base64 encoding"
+                    );
+                    e
+                })
+                .ok()?;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Some(AnthropicContentBlock::Image {
+                source: ImageSource {
+                    source_type: "base64",
+                    media_type: a.mime_type.clone(),
+                    data: encoded,
+                },
+            })
+        })
+        .collect()
 }
 
 /// Convert a [`ToolDefinition`] into the Anthropic tool format.
@@ -483,6 +547,7 @@ fn extract_error_message(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     #[test]
     fn provider_info() {
@@ -515,6 +580,7 @@ mod tests {
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                attachments: None,
             }],
             system: Some("You are helpful.".into()),
             tools: None,
@@ -608,6 +674,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: Some("tc_123".into()),
+            attachments: None,
         };
 
         let converted = convert_message(&msg);
@@ -632,6 +699,7 @@ mod tests {
                 arguments: serde_json::json!({"q": "rust"}),
             }]),
             tool_call_id: None,
+            attachments: None,
         };
 
         let converted = convert_message(&msg);
@@ -728,6 +796,123 @@ mod tests {
     }
 
     #[test]
+    fn convert_message_user_with_image_attachment() {
+        // Create a temp file with known bytes to test base64 encoding.
+        let dir = tempfile::tempdir().unwrap();
+        let img_path = dir.path().join("test.png");
+        let pixel_bytes: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47]; // PNG magic bytes
+        std::fs::write(&img_path, &pixel_bytes).unwrap();
+
+        let msg = ChatMessage {
+            role: Role::User,
+            content: "What is in this image?".into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Some(vec![Attachment {
+                file_path: img_path.to_str().unwrap().into(),
+                mime_type: "image/png".into(),
+                file_name: Some("test.png".into()),
+            }]),
+        };
+
+        let converted = convert_message(&msg);
+        assert_eq!(converted.role, "user");
+
+        let json = serde_json::to_value(&converted).expect("serialize");
+        let blocks = json["content"].as_array().expect("content blocks");
+        // Should have 2 blocks: image first, then text.
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        // Verify the base64 data matches our pixel bytes.
+        let expected_b64 = base64::engine::general_purpose::STANDARD.encode(&pixel_bytes);
+        assert_eq!(blocks[0]["source"]["data"], expected_b64);
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "What is in this image?");
+    }
+
+    #[test]
+    fn convert_message_user_non_image_attachment_skipped() {
+        // Non-image MIME types should be silently skipped.
+        let dir = tempfile::tempdir().unwrap();
+        let pdf_path = dir.path().join("doc.pdf");
+        std::fs::write(&pdf_path, b"fake pdf content").unwrap();
+
+        let msg = ChatMessage {
+            role: Role::User,
+            content: "Check this PDF".into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Some(vec![Attachment {
+                file_path: pdf_path.to_str().unwrap().into(),
+                mime_type: "application/pdf".into(),
+                file_name: Some("doc.pdf".into()),
+            }]),
+        };
+
+        let converted = convert_message(&msg);
+        let json = serde_json::to_value(&converted).expect("serialize");
+        // No image blocks, so should fall back to plain text content.
+        assert_eq!(json["content"], "Check this PDF");
+    }
+
+    #[test]
+    fn convert_message_user_missing_file_skipped() {
+        let msg = ChatMessage {
+            role: Role::User,
+            content: "Look at this".into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Some(vec![Attachment {
+                file_path: "/nonexistent/path/image.png".into(),
+                mime_type: "image/png".into(),
+                file_name: None,
+            }]),
+        };
+
+        let converted = convert_message(&msg);
+        let json = serde_json::to_value(&converted).expect("serialize");
+        // File doesn't exist → image block skipped → plain text fallback.
+        assert_eq!(json["content"], "Look at this");
+    }
+
+    #[test]
+    fn build_image_blocks_multiple_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let img1 = dir.path().join("a.jpg");
+        let img2 = dir.path().join("b.png");
+        std::fs::write(&img1, b"jpeg-data").unwrap();
+        std::fs::write(&img2, b"png-data").unwrap();
+
+        let attachments = vec![
+            Attachment {
+                file_path: img1.to_str().unwrap().into(),
+                mime_type: "image/jpeg".into(),
+                file_name: None,
+            },
+            Attachment {
+                file_path: img2.to_str().unwrap().into(),
+                mime_type: "image/png".into(),
+                file_name: None,
+            },
+        ];
+
+        let blocks = build_image_blocks(&attachments);
+        assert_eq!(blocks.len(), 2);
+
+        let json: Vec<serde_json::Value> = blocks
+            .iter()
+            .map(|b| serde_json::to_value(b).unwrap())
+            .collect();
+        assert_eq!(json[0]["source"]["media_type"], "image/jpeg");
+        assert_eq!(json[1]["source"]["media_type"], "image/png");
+    }
+
+    #[test]
     fn system_messages_filtered_from_messages() {
         let provider = AnthropicProvider::new("key".into());
         let request = ChatRequest {
@@ -739,6 +924,7 @@ mod tests {
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    attachments: None,
                 },
                 ChatMessage {
                     role: Role::User,
@@ -746,6 +932,7 @@ mod tests {
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    attachments: None,
                 },
             ],
             system: Some("System prompt".into()),
